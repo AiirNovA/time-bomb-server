@@ -69,8 +69,8 @@ app.use(express.static(clientDistPath));
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: {
-    origin: CLIENT_URL,
-    credentials: true
+    origin: "*", // Cela autorise toutes les origines (dont ton site Vercel)
+    methods: ["GET", "POST"]
   }
 });
 
