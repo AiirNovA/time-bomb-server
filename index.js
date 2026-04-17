@@ -267,30 +267,30 @@ const assertDeckIntegrity = (room) => {
 const buildPlayerHandsFromDeck = (room, roundNumber) => {
   const players = activePlayers(room);
   
-  // 1. On nettoie tout
+  // 1. On vide les mains (essentiel pour ne pas avoir de doublons)
   players.forEach(p => { p.wires = []; });
 
-  // 2. On récupère UNIQUEMENT les cartes vraiment cachées
-  // Si Big Ben n'a pas été coupé, il EST obligatoirement ici
+  // 2. On récupère TOUTES les cartes qui ne sont pas encore révélées
   let cardsToDistribute = shuffle(room.game.deck.filter(c => c.isRevealed === false));
 
-  // 3. Calcul strict : 5 cartes en M1, 4 en M2, 3 en M3, 2 en M4
-  const perPlayerTarget = 6 - roundNumber; 
+  // 3. On distribue TOUT le paquet restant équitablement
+  let playerIndex = 0;
+  while (cardsToDistribute.length > 0) {
+    const card = cardsToDistribute.pop();
+    const currentPlayer = players[playerIndex % players.length];
+    
+    card.holderPlayerId = currentPlayer.id;
+    currentPlayer.wires.push(card);
+    
+    playerIndex++;
+  }
 
-  // 4. Distribution précise
-  players.forEach(player => {
-    for (let i = 0; i < perPlayerTarget; i++) {
-      if (cardsToDistribute.length > 0) {
-        const card = cardsToDistribute.pop();
-        card.holderPlayerId = player.id;
-        player.wires.push(card);
-      }
-    }
-  });
+  // On informe le jeu du nombre de cartes que chaque joueur a (pour l'affichage)
+  const perPlayerTarget = players[0].wires.length;
 
   return {
     perPlayerTarget,
-    distributedCount: players.length // On fait autant de coupes qu'il y a de joueurs
+    distributedCount: players.length // Toujours 4 coupes par manche à 4 joueurs
   };
 };
 
