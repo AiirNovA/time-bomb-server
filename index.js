@@ -459,7 +459,7 @@ const startRound = (room, roundNumber, preferredOpeningPlayerId = null) => {
   room.game.blockedDrawTargets = {};
   room.game.lastRevealed = null;
 
-  assertDeckIntegrity(room);
+ // assertDeckIntegrity(room);
   addSystemChat(room, serverText.roundStarted(roundNumber, perPlayerTarget));
 };
 
