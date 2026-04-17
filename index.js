@@ -255,25 +255,30 @@ const assertDeckIntegrity = (room) => {
 
 const buildPlayerHandsFromDeck = (room, roundNumber) => {
   const players = activePlayers(room);
-  const perPlayerTarget = cardsPerPlayerForRound(roundNumber);
-  const unrevealedCards = shuffle(collectUnrevealedCards(room));
-  const maxCardsThisRound = Math.min(
-    unrevealedCards.length,
-    players.length * perPlayerTarget
-  );
-  const cardsToDistribute = unrevealedCards.slice(0, maxCardsThisRound);
-
+  // 1. On récupère TOUTES les cartes non révélées (Câbles dorés, neutres, Big Ben)
+  let unrevealedCards = shuffle(collectUnrevealedCards(room));
+  
+  // 2. On calcule combien de cartes chaque joueur doit recevoir (ex: 16 cartes / 4 joueurs = 4)
+  const perPlayerTarget = Math.floor(unrevealedCards.length / players.length);
+  
+  // 3. On vide les mains actuelles
   clearHands(room);
 
-  cardsToDistribute.forEach((card, index) => {
-    const player = players[index % players.length];
-    card.holderPlayerId = player.id;
-    player.wires.push(card);
-  });
+  // 4. On distribue les cartes une par une jusqu'à épuisement du quota par joueur
+  for (let i = 0; i < perPlayerTarget; i++) {
+    players.forEach(player => {
+      if (unrevealedCards.length > 0) {
+        const card = unrevealedCards.pop();
+        card.holderPlayerId = player.id;
+        player.wires.push(card);
+      }
+    });
+  }
 
+  // On renvoie les infos pour mettre à jour l'état du jeu
   return {
     perPlayerTarget,
-    distributedCount: cardsToDistribute.length
+    distributedCount: perPlayerTarget * players.length
   };
 };
 
