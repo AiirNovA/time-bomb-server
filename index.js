@@ -267,6 +267,38 @@ const assertDeckIntegrity = (room) => {
 const buildPlayerHandsFromDeck = (room, roundNumber) => {
   const players = activePlayers(room);
   
+  // 1. On vide les mains
+  players.forEach(p => { p.wires = []; });
+
+  // 2. On prend ABSOLUMENT TOUT ce qui n'est pas révélé
+  let cardsToDistribute = shuffle(room.game.deck.filter(c => !c.isRevealed));
+  
+  // PETIT LOG POUR TOI (à voir dans les logs Render si ça bug encore)
+  console.log(`Manche ${roundNumber} : Il reste ${cardsToDistribute.length} cartes à distribuer pour ${players.length} joueurs.`);
+
+  // 3. DISTRIBUTION DYNAMIQUE (On donne tant qu'il y a des cartes)
+  let playerIndex = 0;
+  while (cardsToDistribute.length > 0) {
+    const card = cardsToDistribute.pop();
+    const player = players[playerIndex % players.length];
+    
+    card.holderPlayerId = player.id;
+    player.wires.push(card);
+    
+    playerIndex++;
+  }
+
+  // On calcule combien de cartes le premier joueur a reçu pour l'info
+  const perPlayerTarget = players[0].wires.length;
+
+  return {
+    perPlayerTarget,
+    distributedCount: room.game.deck.filter(c => c.holderPlayerId !== null && !c.isRevealed).length
+  };
+};
+
+  const players = activePlayers(room);
+  
   // 1. On vide les mains de TOUS les joueurs (Nettoyage total)
   players.forEach(p => {
     p.wires = [];
