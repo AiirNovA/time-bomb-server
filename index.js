@@ -595,27 +595,75 @@ const startGame = (socket) => {
   emitRoomState(room);
 };
 
-const endGameIfNeeded = (room, revealedType) => {
-  if (revealedType === "neutral_cable") {
+const handleCut = (socket, targetPlayerId) => {
+  const room = ensureRoom(socket.data.roomCode);
+  if (!room || room.game.status !== "playing") return;
+
+  if (room.game.currentCutterId !== socket.data.playerId) {
+    io.to(socket.id).emit("error:message", serverText.notYourTurn);
+    return;
+  }
+
+  const targetPlayer = room.players.find(p => p.id === targetPlayerId);
+  const availableWires = targetPlayer?.wires.filter(w => !w.isRevealed);
+
+  if (!availableWires || availableWires.length === 0) {
+    io.to(socket.id).emit("error:message", serverText.noHiddenWiresRemaining);
+    return;
+  }
+
+  // 1. Sélection et révélation de la carte
+  const selectedWire = availableWires[Math.floor(Math.random() * availableWires.length)];
+  selectedWire.isRevealed = true;
+  
+  // 2. Mise à jour de l'historique pour le client
+  const revealedCard = {
+    id: randomId(),
+    type: selectedWire.type,
+    playerId: targetPlayer.id,
+    playerName: targetPlayer.name,
+    revealedBy: room.players.find(p => p.id === socket.data.playerId).name,
+    revealedAt: Date.now()
+  };
+  room.game.revealedCards.push(revealedCard);
+  room.game.lastRevealed = revealedCard;
+  room.game.lastCutTargetId = targetPlayer.id; // Crucial pour le prochain tour
+
+  // 3. LOGIQUE DE VICTOIRE (Intégrée ici pour être infaillible)
+  if (selectedWire.type === "big_ben") {
+    room.game.revealedBigBenCount = 1;
+    endGame(room, "Moriarty", serverText.bigBenTriggered);
+    emitRoomState(room);
+    return;
+  }
+
+  if (selectedWire.type === "golden_cable") {
+    room.game.revealedGoldenCableCount += 1;
+    if (room.game.revealedGoldenCableCount >= room.game.goldenCableTarget) {
+      endGame(room, "Sherlock", serverText.enoughGoldenCables);
+      emitRoomState(room);
+      return;
+    }
+  } else {
     room.game.revealedNeutralCableCount += 1;
   }
 
-  if (revealedType === "golden_cable") {
-    room.game.revealedGoldenCableCount += 1;
+  // 4. GESTION DU NOMBRE D'ACTIONS ET DES MANCHES
+  room.game.actionsRemainingInRound -= 1;
+
+  if (room.game.actionsRemainingInRound <= 0) {
+    if (room.game.currentRound >= room.game.maxRounds) {
+      endGame(room, "Moriarty", serverText.maxRoundsReached);
+    } else {
+      // On lance la manche suivante, le visé commence
+      startRound(room, room.game.currentRound + 1, room.game.lastCutTargetId);
+    }
+  } else {
+    // Le tour passe au joueur qui vient d'être coupé
+    room.game.currentCutterId = targetPlayer.id;
   }
 
-  if (revealedType === "big_ben") {
-    room.game.revealedBigBenCount += 1;
-    endGame(room, "Moriarty", serverText.bigBenTriggered);
-    return true;
-  }
-
-  if (room.game.revealedGoldenCableCount >= room.game.goldenCableTarget) {
-    endGame(room, "Sherlock", serverText.enoughGoldenCables);
-    return true;
-  }
-
-  return false;
+  emitRoomState(room);
 };
 
 const handleCut = (socket, targetPlayerId) => {
