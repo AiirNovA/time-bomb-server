@@ -26,20 +26,20 @@ const rooms = new Map();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const serverText = {
-  system: "Système",
+  system: "SystÃ¨me",
   currentCutterWaiting: "En attente",
   roomNotFound: "Salle introuvable.",
-  roomFull: "Cette salle est déjà pleine.",
-  matchAlreadyStarted: "La partie a déjà commencé.",
-  hostNow: (name) => `${name} est maintenant l'hôte.`,
-  createdRoom: (name) => `${name} a créé la salle.`,
+  roomFull: "Cette salle est dÃ©jÃ  pleine.",
+  matchAlreadyStarted: "La partie a dÃ©jÃ  commencÃ©.",
+  hostNow: (name) => `${name} est maintenant l'hÃ´te.`,
+  createdRoom: (name) => `${name} a crÃ©Ã© la salle.`,
   joinedRoom: (name) => `${name} a rejoint la salle.`,
-  leftRoom: (name) => `${name} a quitté la salle.`,
-  tooManyPlayersLeft: "Trop de joueurs sont partis. La partie est terminée.",
-  onlyHostCanStart: "Seul l'hôte peut lancer la partie.",
+  leftRoom: (name) => `${name} a quittÃ© la salle.`,
+  tooManyPlayersLeft: "Trop de joueurs sont partis. La partie est terminÃ©e.",
+  onlyHostCanStart: "Seul l'hÃ´te peut lancer la partie.",
   connectedPlayersRequired:
-    "Une partie nécessite entre 4 et 8 joueurs connectés.",
-  matchStarted: "La partie a commencé. Les rôles et les fils ont été attribués.",
+    "Une partie nÃ©cessite entre 4 et 8 joueurs connectÃ©s.",
+  matchStarted: "La partie a commencÃ©. Les rÃ´les et les fils ont Ã©tÃ© attribuÃ©s.",
   enoughGoldenCables: "Tous les cables dores ont ete trouves. Les Sherlock gagnent.",
   bigBenTriggered: "Big Ben a ete revele. Les Moriarty gagnent immediatement.",
   maxRoundsReached:
@@ -48,7 +48,7 @@ const serverText = {
   notYourTurn: "Ce n'est pas votre tour.",
   mustTargetAnotherPlayer: "Vous devez viser un autre joueur.",
   targetPlayerNotFound: "Joueur cible introuvable.",
-  noHiddenWiresRemaining: "Ce joueur n'a plus de fils cachés.",
+  noHiddenWiresRemaining: "Ce joueur n'a plus de fils cachÃ©s.",
   invalidPlayerName: "Saisissez un nom de joueur valide.",
   enterRoomCodeAndName: "Saisissez un code de salle et un nom de joueur.",
   roundStarted: (roundNumber, cardsPerPlayer) =>
@@ -69,7 +69,7 @@ app.use(express.static(clientDistPath));
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: {
-    origin: "*", // Cela autorise toutes les origines (dont ton site Vercel)
+    origin: "*",
     methods: ["GET", "POST"]
   }
 });
@@ -148,41 +148,66 @@ const deckCountsFor = (playerCount) => {
 const cardsPerPlayerForRound = (_playerCount, roundNumber) =>
   ROUND_HAND_SIZES[roundNumber - 1] ?? ROUND_HAND_SIZES[ROUND_HAND_SIZES.length - 1];
 
-const createDeck = (playerCount) => {
+const createDeck = (playerCount, overrides = {}) => {
   const counts = deckCountsFor(playerCount);
+  const neutralCount = overrides.neutral ?? counts.neutral;
+  const goldenCount = overrides.golden ?? counts.golden;
+  const expectedBigBenCount = overrides.bigBen ?? counts.bigBen;
   const deck = [];
   let hasBigBenBeenAdded = false;
 
-  for (let index = 0; index < counts.neutral; index += 1) deck.push("neutral_cable");
-  for (let index = 0; index < counts.golden; index += 1) deck.push("golden_cable");
+  for (let index = 0; index < neutralCount; index += 1) deck.push("neutral_cable");
+  for (let index = 0; index < goldenCount; index += 1) deck.push("golden_cable");
 
-  if (!hasBigBenBeenAdded) {
+  if (expectedBigBenCount > 0 && !hasBigBenBeenAdded) {
     deck.push("big_ben");
     hasBigBenBeenAdded = true;
   }
 
-  const bigBenCount = deck.filter((card) => card === "big_ben").length;
-  if (bigBenCount !== 1 || deck.length !== counts.neutral + counts.golden + counts.bigBen) {
-    throw new Error("Deck generation failed: expected exactly one Big Ben card.");
+  const actualBigBenCount = deck.filter((card) => card === "big_ben").length;
+  if (
+    actualBigBenCount !== expectedBigBenCount ||
+    deck.length !== neutralCount + goldenCount + expectedBigBenCount
+  ) {
+    throw new Error("Deck generation failed: invalid card composition.");
   }
 
   return shuffle(deck);
 };
 
-const createGameState = (room, roundNumber = 1, previousGame = room.game) => {
+const createGameState = (
+  room,
+  roundNumber = 1,
+  previousGame = room.game,
+  nextCutterId = null
+) => {
   const players = activePlayers(room);
   const shuffledPlayers = shuffle(players);
   const teamSplit = teamSplitFor(players.length);
   const cardsPerPlayer = cardsPerPlayerForRound(players.length, roundNumber);
-  const roles = shuffle([
-    ...Array.from({ length: teamSplit.sherlocks }, () => "Sherlock"),
-    ...Array.from({ length: teamSplit.moriartys }, () => "Moriarty")
-  ]);
-  const fullDeck = createDeck(players.length);
+  const deckPlayerCount = previousGame?.deckPlayerCount || players.length;
+  const shouldAssignRoles = players.some((player) => player.role === "Hidden");
+  const roles = shouldAssignRoles
+    ? shuffle([
+        ...Array.from({ length: teamSplit.sherlocks }, () => "Sherlock"),
+        ...Array.from({ length: teamSplit.moriartys }, () => "Moriarty")
+      ])
+    : [];
+  const deckCounts = deckCountsFor(deckPlayerCount);
+  const remainingGolden = Math.max(
+    0,
+    deckCounts.golden - (previousGame?.revealedGoldenCableCount ?? 0)
+  );
+  const remainingBigBen = previousGame?.revealedBigBenCount > 0 ? 0 : BIG_BEN_CARDS;
+  const fullDeck = createDeck(deckPlayerCount, {
+    neutral: deckCounts.neutral,
+    golden: remainingGolden,
+    bigBen: remainingBigBen
+  });
   const roundDeck = fullDeck.slice(0, players.length * cardsPerPlayer);
 
   players.forEach((player, index) => {
-    if (player.role === "Hidden") {
+    if (shouldAssignRoles && player.role === "Hidden") {
       player.role = roles[index];
     }
     player.wires = Array.from({ length: cardsPerPlayer }, () => ({
@@ -192,11 +217,18 @@ const createGameState = (room, roundNumber = 1, previousGame = room.game) => {
     }));
   });
 
+  const openerId =
+    (nextCutterId && players.find((player) => player.id === nextCutterId)?.id) ||
+    (previousGame?.currentCutterId &&
+      players.find((player) => player.id === previousGame.currentCutterId)?.id) ||
+    shuffledPlayers[0].id;
+
   return {
     status: "playing",
-    currentCutterId: shuffledPlayers[0].id,
+    currentCutterId: openerId,
     hasBigBenBeenAdded: true,
     blockedDrawTargets: {},
+    deckPlayerCount,
     currentRound: roundNumber,
     maxRounds: MAX_ROUNDS,
     cardsPerPlayer,
@@ -206,15 +238,15 @@ const createGameState = (room, roundNumber = 1, previousGame = room.game) => {
     revealedNeutralCableCount: previousGame?.revealedNeutralCableCount ?? 0,
     revealedGoldenCableCount: previousGame?.revealedGoldenCableCount ?? 0,
     revealedBigBenCount: previousGame?.revealedBigBenCount ?? 0,
-    goldenCableTarget: deckCountsFor(players.length).golden,
+    goldenCableTarget: deckCounts.golden,
     winner: previousGame?.winner ?? null,
     winningTeam: previousGame?.winningTeam ?? null,
     lastRevealed: null
   };
 };
 
-const startRound = (room, roundNumber) => {
-  room.game = createGameState(room, roundNumber, room.game);
+const startRound = (room, roundNumber, nextCutterId = null) => {
+  room.game = createGameState(room, roundNumber, room.game, nextCutterId);
   addSystemChat(room, serverText.roundStarted(room.game.currentRound, room.game.cardsPerPlayer));
 };
 
@@ -310,6 +342,7 @@ const createRoom = (socket, name, avatarId) => {
       currentCutterId: null,
       hasBigBenBeenAdded: false,
       blockedDrawTargets: {},
+      deckPlayerCount: 0,
       currentRound: 0,
       maxRounds: MAX_ROUNDS,
       cardsPerPlayer: 0,
@@ -531,7 +564,7 @@ const handleCut = (socket, targetPlayerId) => {
         room.game.winningTeam = "Moriarty";
         addSystemChat(room, serverText.maxRoundsReached);
       } else {
-        startRound(room, room.game.currentRound + 1);
+        startRound(room, room.game.currentRound + 1, targetPlayer.id);
       }
     } else {
       room.game.currentCutterId = targetPlayer.id;
