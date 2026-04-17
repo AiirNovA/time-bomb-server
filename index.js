@@ -267,6 +267,35 @@ const assertDeckIntegrity = (room) => {
 const buildPlayerHandsFromDeck = (room, roundNumber) => {
   const players = activePlayers(room);
   
+  // 1. On nettoie tout
+  players.forEach(p => { p.wires = []; });
+
+  // 2. On récupère UNIQUEMENT les cartes vraiment cachées
+  // Si Big Ben n'a pas été coupé, il EST obligatoirement ici
+  let cardsToDistribute = shuffle(room.game.deck.filter(c => c.isRevealed === false));
+
+  // 3. Calcul strict : 5 cartes en M1, 4 en M2, 3 en M3, 2 en M4
+  const perPlayerTarget = 6 - roundNumber; 
+
+  // 4. Distribution précise
+  players.forEach(player => {
+    for (let i = 0; i < perPlayerTarget; i++) {
+      if (cardsToDistribute.length > 0) {
+        const card = cardsToDistribute.pop();
+        card.holderPlayerId = player.id;
+        player.wires.push(card);
+      }
+    }
+  });
+
+  return {
+    perPlayerTarget,
+    distributedCount: players.length // On fait autant de coupes qu'il y a de joueurs
+  };
+};
+
+  const players = activePlayers(room);
+  
   // 1. On vide les mains
   players.forEach(p => { p.wires = []; });
 
