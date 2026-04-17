@@ -12,6 +12,7 @@ const BIG_BEN_CARDS = 1;
 const MAX_ROUNDS = 4;
 const CHAT_LIMIT = 80;
 const ROUND_HAND_SIZES = [5, 4, 3, 2];
+
 const ALLOWED_AVATAR_IDS = new Set([
   "detective-loupe",
   "top-hat",
@@ -22,37 +23,39 @@ const ALLOWED_AVATAR_IDS = new Set([
   "chemist",
   "masked-noble"
 ]);
+
 const rooms = new Map();
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
 const serverText = {
-  system: "SystÃƒÂ¨me",
+  system: "Systeme",
   currentCutterWaiting: "En attente",
   roomNotFound: "Salle introuvable.",
-  roomFull: "Cette salle est dÃƒÂ©jÃƒÂ  pleine.",
-  matchAlreadyStarted: "La partie a dÃƒÂ©jÃƒÂ  commencÃƒÂ©.",
-  hostNow: (name) => `${name} est maintenant l'hÃƒÂ´te.`,
-  createdRoom: (name) => `${name} a crÃƒÂ©ÃƒÂ© la salle.`,
+  roomFull: "Cette salle est deja pleine.",
+  matchAlreadyStarted: "La partie a deja commence.",
+  hostNow: (name) => `${name} est maintenant l'hote.`,
+  createdRoom: (name) => `${name} a cree la salle.`,
   joinedRoom: (name) => `${name} a rejoint la salle.`,
-  leftRoom: (name) => `${name} a quittÃƒÂ© la salle.`,
-  tooManyPlayersLeft: "Trop de joueurs sont partis. La partie est terminÃƒÂ©e.",
-  onlyHostCanStart: "Seul l'hÃƒÂ´te peut lancer la partie.",
-  connectedPlayersRequired:
-    "Une partie nÃƒÂ©cessite entre 4 et 8 joueurs connectÃƒÂ©s.",
-  matchStarted: "La partie a commencÃƒÂ©. Les rÃƒÂ´les et les fils ont ÃƒÂ©tÃƒÂ© attribuÃƒÂ©s.",
+  leftRoom: (name) => `${name} a quitte la salle.`,
+  tooManyPlayersLeft: "Trop de joueurs sont partis. La partie est terminee.",
+  onlyHostCanStart: "Seul l'hote peut lancer la partie.",
+  connectedPlayersRequired: "Une partie necessite entre 4 et 8 joueurs connectes.",
+  matchStarted: "La partie a commence. Les roles et les cartes ont ete attribues.",
   enoughGoldenCables: "Tous les cables dores ont ete trouves. Les Sherlock gagnent.",
   bigBenTriggered: "Big Ben a ete revele. Les Moriarty gagnent immediatement.",
-  maxRoundsReached:
-    "La 4e manche est terminee sans victoire des Sherlock. Les Moriarty gagnent.",
+  maxRoundsReached: "La 4e manche est terminee sans victoire des Sherlock. Les Moriarty gagnent.",
   gameNotInProgress: "La partie n'est pas en cours.",
   notYourTurn: "Ce n'est pas votre tour.",
   mustTargetAnotherPlayer: "Vous devez viser un autre joueur.",
   targetPlayerNotFound: "Joueur cible introuvable.",
-  noHiddenWiresRemaining: "Ce joueur n'a plus de fils cachÃƒÂ©s.",
+  noHiddenWiresRemaining: "Ce joueur n'a plus de cartes cachees.",
   invalidPlayerName: "Saisissez un nom de joueur valide.",
   enterRoomCodeAndName: "Saisissez un code de salle et un nom de joueur.",
   roundStarted: (roundNumber, cardsPerPlayer) =>
-    `Manche ${roundNumber} : ${cardsPerPlayer} actions de coupe pour cette manche.`
+    `Manche ${roundNumber} : distribution de ${cardsPerPlayer} cartes maximum par joueur.`,
+  blockedTarget: (name) => `Vous ne pouvez pas viser ${name} ce tour-ci.`
 };
 
 const app = express();
@@ -110,6 +113,7 @@ const addSystemChat = (room, message) => {
 };
 
 const activePlayers = (room) => room.players.filter((player) => player.connected);
+
 const sanitizeAvatarId = (avatarId) =>
   ALLOWED_AVATAR_IDS.has(avatarId) ? avatarId : "detective-loupe";
 
@@ -119,17 +123,21 @@ const teamSplitFor = (playerCount) => {
       ? { sherlocks: 3, moriartys: 1 }
       : { sherlocks: 2, moriartys: 2 };
   }
+
   if (playerCount === 5) {
     return { sherlocks: 3, moriartys: 2 };
   }
+
   if (playerCount === 6) {
     return { sherlocks: 4, moriartys: 2 };
   }
+
   if (playerCount === 7) {
     return Math.random() < 0.5
       ? { sherlocks: 4, moriartys: 3 }
       : { sherlocks: 5, moriartys: 2 };
   }
+
   return { sherlocks: 5, moriartys: 3 };
 };
 
@@ -145,134 +153,169 @@ const deckCountsFor = (playerCount) => {
   return countsByPlayers[playerCount];
 };
 
-const cardsPerPlayerForRound = (_playerCount, roundNumber) =>
+const cardsPerPlayerForRound = (roundNumber) =>
   ROUND_HAND_SIZES[roundNumber - 1] ?? ROUND_HAND_SIZES[ROUND_HAND_SIZES.length - 1];
 
-const createDeck = (playerCount, overrides = {}) => {
+const createPersistentDeck = (playerCount) => {
   const counts = deckCountsFor(playerCount);
-  const neutralCount = overrides.neutral ?? counts.neutral;
-  const goldenCount = overrides.golden ?? counts.golden;
-  const expectedBigBenCount = overrides.bigBen ?? counts.bigBen;
   const deck = [];
-  let hasBigBenBeenAdded = false;
 
-  for (let index = 0; index < neutralCount; index += 1) {
-    deck.push({ id: randomId(), type: "neutral_cable" });
-  }
-  for (let index = 0; index < goldenCount; index += 1) {
-    deck.push({ id: randomId(), type: "golden_cable" });
-  }
-
-  if (expectedBigBenCount > 0 && !hasBigBenBeenAdded) {
-    deck.push({ id: randomId(), type: "big_ben" });
-    hasBigBenBeenAdded = true;
+  for (let index = 0; index < counts.neutral; index += 1) {
+    deck.push({
+      id: randomId(),
+      type: "neutral_cable",
+      isRevealed: false,
+      holderPlayerId: null
+    });
   }
 
-  const actualBigBenCount = deck.filter((card) => card.type === "big_ben").length;
-  if (
-    actualBigBenCount !== expectedBigBenCount ||
-    deck.length !== neutralCount + goldenCount + expectedBigBenCount
-  ) {
-    throw new Error("Deck generation failed: invalid card composition.");
+  for (let index = 0; index < counts.golden; index += 1) {
+    deck.push({
+      id: randomId(),
+      type: "golden_cable",
+      isRevealed: false,
+      holderPlayerId: null
+    });
+  }
+
+  deck.push({
+    id: randomId(),
+    type: "big_ben",
+    isRevealed: false,
+    holderPlayerId: null
+  });
+
+  const bigBenCount = deck.filter((card) => card.type === "big_ben").length;
+  if (bigBenCount !== 1) {
+    throw new Error("Deck generation failed: expected exactly one Big Ben.");
   }
 
   return shuffle(deck);
 };
 
-const assertPersistentDeckIntegrity = (game) => {
-  const remainingGolden = game.remainingDeck.filter(
-    (card) => card.type === "golden_cable"
-  ).length;
-  const remainingBigBen = game.remainingDeck.filter(
-    (card) => card.type === "big_ben"
-  ).length;
+const assignRolesIfNeeded = (room) => {
+  const players = activePlayers(room);
+  const shouldAssignRoles = players.some((player) => player.role === "Hidden");
 
-  if (remainingGolden + game.revealedGoldenCableCount !== game.goldenCableTarget) {
-    throw new Error("Golden cable integrity check failed.");
+  if (!shouldAssignRoles) {
+    return;
   }
 
-  if (remainingBigBen + game.revealedBigBenCount !== BIG_BEN_CARDS) {
-    throw new Error("Big Ben integrity check failed.");
+  const split = teamSplitFor(players.length);
+  const roles = shuffle([
+    ...Array.from({ length: split.sherlocks }, () => "Sherlock"),
+    ...Array.from({ length: split.moriartys }, () => "Moriarty")
+  ]);
+
+  players.forEach((player, index) => {
+    player.role = roles[index];
+  });
+};
+
+const clearHands = (room) => {
+  room.players.forEach((player) => {
+    player.wires = [];
+  });
+
+  room.game.deck.forEach((card) => {
+    if (!card.isRevealed) {
+      card.holderPlayerId = null;
+    }
+  });
+};
+
+const collectUnrevealedCards = (room) =>
+  room.game.deck.filter((card) => !card.isRevealed);
+
+const assertDeckIntegrity = (room) => {
+  const totalGolden = room.game.deck.filter((card) => card.type === "golden_cable").length;
+  const revealedGolden = room.game.deck.filter(
+    (card) => card.type === "golden_cable" && card.isRevealed
+  ).length;
+  const hiddenGolden = room.game.deck.filter(
+    (card) => card.type === "golden_cable" && !card.isRevealed
+  ).length;
+  const bigBenCount = room.game.deck.filter((card) => card.type === "big_ben").length;
+  const revealedBigBen = room.game.deck.filter(
+    (card) => card.type === "big_ben" && card.isRevealed
+  ).length;
+
+  if (totalGolden !== room.game.goldenCableTarget) {
+    throw new Error("Golden cable total mismatch.");
+  }
+
+  if (revealedGolden + hiddenGolden !== room.game.goldenCableTarget) {
+    throw new Error("Golden cable revealed/hidden mismatch.");
+  }
+
+  if (bigBenCount !== BIG_BEN_CARDS || revealedBigBen > BIG_BEN_CARDS) {
+    throw new Error("Big Ben integrity mismatch.");
   }
 };
 
-const createGameState = (
-  room,
-  roundNumber = 1,
-  previousGame = room.game,
-  nextCutterId = null
-) => {
+const buildPlayerHandsFromDeck = (room, roundNumber) => {
   const players = activePlayers(room);
-  const shuffledPlayers = shuffle(players);
-  const teamSplit = teamSplitFor(players.length);
-  const cardsPerPlayer = cardsPerPlayerForRound(players.length, roundNumber);
-  const deckPlayerCount = previousGame?.deckPlayerCount || players.length;
-  const shouldAssignRoles = players.some((player) => player.role === "Hidden");
-  const roles = shouldAssignRoles
-    ? shuffle([
-        ...Array.from({ length: teamSplit.sherlocks }, () => "Sherlock"),
-        ...Array.from({ length: teamSplit.moriartys }, () => "Moriarty")
-      ])
-    : [];
-  const deckCounts = deckCountsFor(deckPlayerCount);
-  const remainingDeck =
-    previousGame?.remainingDeck?.length
-      ? [...previousGame.remainingDeck]
-      : createDeck(deckPlayerCount, {
-          neutral: deckCounts.neutral,
-          golden: deckCounts.golden,
-          bigBen: BIG_BEN_CARDS
-        });
-  const roundDeck = shuffle(remainingDeck).slice(0, players.length * cardsPerPlayer);
+  const perPlayerTarget = cardsPerPlayerForRound(roundNumber);
+  const unrevealedCards = shuffle(collectUnrevealedCards(room));
+  const maxCardsThisRound = Math.min(
+    unrevealedCards.length,
+    players.length * perPlayerTarget
+  );
+  const cardsToDistribute = unrevealedCards.slice(0, maxCardsThisRound);
 
-  players.forEach((player, index) => {
-    if (shouldAssignRoles && player.role === "Hidden") {
-      player.role = roles[index];
-    }
-    player.wires = Array.from({ length: cardsPerPlayer }, () => {
-      const card = roundDeck.pop();
-      return {
-        id: card.id,
-        type: card.type,
-        revealed: false
-      };
-    });
+  clearHands(room);
+
+  cardsToDistribute.forEach((card, index) => {
+    const player = players[index % players.length];
+    card.holderPlayerId = player.id;
+    player.wires.push(card);
   });
 
-  const openerId =
-    (nextCutterId && players.find((player) => player.id === nextCutterId)?.id) ||
-    (previousGame?.currentCutterId &&
-      players.find((player) => player.id === previousGame.currentCutterId)?.id) ||
-    shuffledPlayers[0].id;
-
   return {
-    status: "playing",
-    currentCutterId: openerId,
-    hasBigBenBeenAdded: true,
-    blockedDrawTargets: {},
-    deckPlayerCount,
-    currentRound: roundNumber,
-    maxRounds: MAX_ROUNDS,
-    cardsPerPlayer,
-    roundActionCount: cardsPerPlayer,
-    actionsRemainingInRound: cardsPerPlayer,
-    revealedCards: previousGame?.revealedCards ?? [],
-    revealedNeutralCableCount: previousGame?.revealedNeutralCableCount ?? 0,
-    revealedGoldenCableCount: previousGame?.revealedGoldenCableCount ?? 0,
-    revealedBigBenCount: previousGame?.revealedBigBenCount ?? 0,
-    remainingDeck,
-    goldenCableTarget: deckCounts.golden,
-    winner: previousGame?.winner ?? null,
-    winningTeam: previousGame?.winningTeam ?? null,
-    lastRevealed: null,
-    lastCutTargetId: nextCutterId || previousGame?.lastCutTargetId || null
+    perPlayerTarget,
+    distributedCount: cardsToDistribute.length
   };
 };
 
-const startRound = (room, roundNumber, nextCutterId = null) => {
-  room.game = createGameState(room, roundNumber, room.game, nextCutterId);
-  assertPersistentDeckIntegrity(room.game);
-  addSystemChat(room, serverText.roundStarted(room.game.currentRound, room.game.cardsPerPlayer));
+const resolveOpeningPlayerId = (room, preferredPlayerId = null) => {
+  const players = activePlayers(room);
+
+  if (preferredPlayerId && players.some((player) => player.id === preferredPlayerId)) {
+    return preferredPlayerId;
+  }
+
+  if (
+    room.game.lastCutTargetId &&
+    players.some((player) => player.id === room.game.lastCutTargetId)
+  ) {
+    return room.game.lastCutTargetId;
+  }
+
+  if (
+    room.game.currentCutterId &&
+    players.some((player) => player.id === room.game.currentCutterId)
+  ) {
+    return room.game.currentCutterId;
+  }
+
+  return shuffle(players)[0]?.id || null;
+};
+
+const startRound = (room, roundNumber, preferredOpeningPlayerId = null) => {
+  const { perPlayerTarget, distributedCount } = buildPlayerHandsFromDeck(room, roundNumber);
+  const openingPlayerId = resolveOpeningPlayerId(room, preferredOpeningPlayerId);
+
+  room.game.status = "playing";
+  room.game.currentRound = roundNumber;
+  room.game.cardsPerPlayer = perPlayerTarget;
+  room.game.roundActionCount = distributedCount;
+  room.game.actionsRemainingInRound = distributedCount;
+  room.game.currentCutterId = openingPlayerId;
+  room.game.blockedDrawTargets = {};
+  room.game.lastRevealed = null;
+
+  assertDeckIntegrity(room);
+  addSystemChat(room, serverText.roundStarted(roundNumber, perPlayerTarget));
 };
 
 const publicPlayerView = (viewerId, player, gameStatus) => {
@@ -287,11 +330,22 @@ const publicPlayerView = (viewerId, player, gameStatus) => {
     connected: player.connected,
     role: isSelf || revealAll ? player.role : "Hidden",
     wires: player.wires.map((wire) => {
-      if (wire.revealed || isSelf || revealAll) return wire;
-      return { id: wire.id, type: "hidden", revealed: false };
+      if (wire.isRevealed || isSelf || revealAll) {
+        return {
+          id: wire.id,
+          type: wire.type,
+          revealed: wire.isRevealed
+        };
+      }
+
+      return {
+        id: wire.id,
+        type: "hidden",
+        revealed: false
+      };
     }),
-    unrevealedCount: player.wires.filter((wire) => !wire.revealed).length,
-    revealedCount: player.wires.filter((wire) => wire.revealed).length
+    unrevealedCount: player.wires.filter((wire) => !wire.isRevealed).length,
+    revealedCount: player.wires.filter((wire) => wire.isRevealed).length
   };
 };
 
@@ -299,7 +353,7 @@ const buildRoomState = (room, viewerId) => {
   const cutter = room.players.find((player) => player.id === room.game.currentCutterId);
   const blockedTargetId = room.game.blockedDrawTargets?.[viewerId] || null;
   const blockedTargetPlayer = room.players.find((player) => player.id === blockedTargetId);
-  const { remainingDeck, ...publicGameState } = room.game;
+
   return {
     code: room.code,
     selfId: viewerId,
@@ -309,11 +363,24 @@ const buildRoomState = (room, viewerId) => {
       publicPlayerView(viewerId, player, room.game.status)
     ),
     game: {
-      ...publicGameState,
+      status: room.game.status,
+      currentCutterId: room.game.currentCutterId,
       currentCutterName: cutter?.name || serverText.currentCutterWaiting,
+      currentRound: room.game.currentRound,
+      maxRounds: room.game.maxRounds,
+      cardsPerPlayer: room.game.cardsPerPlayer,
+      roundActionCount: room.game.roundActionCount,
+      actionsRemainingInRound: room.game.actionsRemainingInRound,
+      revealedCards: room.game.status === "waiting" ? [] : room.game.revealedCards,
+      revealedNeutralCableCount: room.game.revealedNeutralCableCount,
+      revealedGoldenCableCount: room.game.revealedGoldenCableCount,
+      revealedBigBenCount: room.game.revealedBigBenCount,
+      goldenCableTarget: room.game.goldenCableTarget,
+      winner: room.game.winner,
+      winningTeam: room.game.winningTeam,
+      lastRevealed: room.game.lastRevealed,
       blockedTargetId,
-      blockedTargetName: blockedTargetPlayer?.name || null,
-      revealedCards: room.game.status === "waiting" ? [] : room.game.revealedCards
+      blockedTargetName: blockedTargetPlayer?.name || null
     }
   };
 };
@@ -327,15 +394,21 @@ const emitRoomState = (room) => {
 const ensureRoom = (code) => rooms.get(code);
 
 const cleanupRoomIfEmpty = (room) => {
-  if (!room.players.length) rooms.delete(room.code);
+  if (!room.players.length) {
+    rooms.delete(room.code);
+  }
 };
 
 const transferHostIfNeeded = (room) => {
   const currentHost = room.players.find((player) => player.id === room.hostId);
-  if (currentHost) return;
+  if (currentHost) {
+    return;
+  }
 
   const nextHost = room.players[0];
-  if (!nextHost) return;
+  if (!nextHost) {
+    return;
+  }
 
   room.hostId = nextHost.id;
   room.players = room.players.map((player) => ({
@@ -366,9 +439,6 @@ const createRoom = (socket, name, avatarId) => {
     game: {
       status: "waiting",
       currentCutterId: null,
-      hasBigBenBeenAdded: false,
-      blockedDrawTargets: {},
-      deckPlayerCount: 0,
       currentRound: 0,
       maxRounds: MAX_ROUNDS,
       cardsPerPlayer: 0,
@@ -378,11 +448,12 @@ const createRoom = (socket, name, avatarId) => {
       revealedNeutralCableCount: 0,
       revealedGoldenCableCount: 0,
       revealedBigBenCount: 0,
-      remainingDeck: [],
       goldenCableTarget: 0,
       winner: null,
       winningTeam: null,
       lastRevealed: null,
+      blockedDrawTargets: {},
+      deck: [],
       lastCutTargetId: null
     }
   };
@@ -391,6 +462,7 @@ const createRoom = (socket, name, avatarId) => {
   socket.data.roomCode = code;
   socket.data.playerId = player.id;
   socket.join(code);
+
   addSystemChat(room, serverText.createdRoom(name));
   emitRoomState(room);
 };
@@ -401,10 +473,12 @@ const joinRoom = (socket, code, name, avatarId) => {
     io.to(socket.id).emit("error:message", serverText.roomNotFound);
     return;
   }
+
   if (room.players.length >= 8) {
     io.to(socket.id).emit("error:message", serverText.roomFull);
     return;
   }
+
   if (room.game.status !== "waiting") {
     io.to(socket.id).emit("error:message", serverText.matchAlreadyStarted);
     return;
@@ -425,17 +499,30 @@ const joinRoom = (socket, code, name, avatarId) => {
   socket.data.roomCode = room.code;
   socket.data.playerId = player.id;
   socket.join(room.code);
+
   addSystemChat(room, serverText.joinedRoom(name));
   emitRoomState(room);
+};
+
+const endGame = (room, winner, message) => {
+  room.game.status = "ended";
+  room.game.winner = winner;
+  room.game.winningTeam = winner;
+  addSystemChat(room, message);
 };
 
 const removePlayerFromRoom = (socket) => {
   const roomCode = socket.data.roomCode;
   const playerId = socket.data.playerId;
-  if (!roomCode || !playerId) return;
+
+  if (!roomCode || !playerId) {
+    return;
+  }
 
   const room = ensureRoom(roomCode);
-  if (!room) return;
+  if (!room) {
+    return;
+  }
 
   const departingPlayer = room.players.find((player) => player.id === playerId);
   room.players = room.players.filter((player) => player.id !== playerId);
@@ -448,18 +535,16 @@ const removePlayerFromRoom = (socket) => {
   transferHostIfNeeded(room);
 
   if (room.game.status === "playing" && room.game.currentCutterId === playerId) {
-    room.game.currentCutterId = room.players[0]?.id || null;
+    room.game.currentCutterId = activePlayers(room)[0]?.id || null;
   }
 
   if (room.game.status === "playing" && room.players.length < 4) {
-    room.game.status = "ended";
-    room.game.winner = "Moriarty";
-    room.game.winningTeam = "Moriarty";
-    addSystemChat(room, serverText.tooManyPlayersLeft);
+    endGame(room, "Moriarty", serverText.tooManyPlayersLeft);
   }
 
   emitRoomState(room);
   cleanupRoomIfEmpty(room);
+
   delete socket.data.roomCode;
   delete socket.data.playerId;
   io.to(socket.id).emit("room:left");
@@ -473,7 +558,9 @@ const moveSocketOutOfCurrentRoom = (socket) => {
 
 const startGame = (socket) => {
   const room = ensureRoom(socket.data.roomCode);
-  if (!room) return;
+  if (!room) {
+    return;
+  }
 
   if (socket.data.playerId !== room.hostId) {
     io.to(socket.id).emit("error:message", serverText.onlyHostCanStart);
@@ -482,36 +569,44 @@ const startGame = (socket) => {
 
   const players = activePlayers(room);
   if (players.length < 4 || players.length > 8) {
-    io.to(socket.id).emit(
-      "error:message",
-      serverText.connectedPlayersRequired
-    );
+    io.to(socket.id).emit("error:message", serverText.connectedPlayersRequired);
     return;
   }
 
+  assignRolesIfNeeded(room);
+  room.game.deck = createPersistentDeck(players.length);
+  room.game.goldenCableTarget = deckCountsFor(players.length).golden;
+  room.game.revealedCards = [];
+  room.game.revealedNeutralCableCount = 0;
+  room.game.revealedGoldenCableCount = 0;
+  room.game.revealedBigBenCount = 0;
+  room.game.winner = null;
+  room.game.winningTeam = null;
+  room.game.lastRevealed = null;
+  room.game.lastCutTargetId = null;
+
   addSystemChat(room, serverText.matchStarted);
-  startRound(room, 1);
+  startRound(room, 1, null);
   emitRoomState(room);
 };
 
-const endGameIfNeeded = (room, revealedType, targetPlayer) => {
-  if (revealedType === "neutral_cable") room.game.revealedNeutralCableCount += 1;
-  if (revealedType === "golden_cable") room.game.revealedGoldenCableCount += 1;
-  if (revealedType === "big_ben") room.game.revealedBigBenCount += 1;
+const endGameIfNeeded = (room, revealedType) => {
+  if (revealedType === "neutral_cable") {
+    room.game.revealedNeutralCableCount += 1;
+  }
+
+  if (revealedType === "golden_cable") {
+    room.game.revealedGoldenCableCount += 1;
+  }
 
   if (revealedType === "big_ben") {
-    room.game.status = "ended";
-    room.game.winner = "Moriarty";
-    room.game.winningTeam = "Moriarty";
-    addSystemChat(room, serverText.bigBenTriggered);
+    room.game.revealedBigBenCount += 1;
+    endGame(room, "Moriarty", serverText.bigBenTriggered);
     return true;
   }
 
   if (room.game.revealedGoldenCableCount >= room.game.goldenCableTarget) {
-    room.game.status = "ended";
-    room.game.winner = "Sherlock";
-    room.game.winningTeam = "Sherlock";
-    addSystemChat(room, serverText.enoughGoldenCables);
+    endGame(room, "Sherlock", serverText.enoughGoldenCables);
     return true;
   }
 
@@ -520,16 +615,20 @@ const endGameIfNeeded = (room, revealedType, targetPlayer) => {
 
 const handleCut = (socket, targetPlayerId) => {
   const room = ensureRoom(socket.data.roomCode);
-  if (!room) return;
+  if (!room) {
+    return;
+  }
 
   if (room.game.status !== "playing") {
     io.to(socket.id).emit("error:message", serverText.gameNotInProgress);
     return;
   }
+
   if (room.game.currentCutterId !== socket.data.playerId) {
     io.to(socket.id).emit("error:message", serverText.notYourTurn);
     return;
   }
+
   if (targetPlayerId === socket.data.playerId) {
     io.to(socket.id).emit("error:message", serverText.mustTargetAnotherPlayer);
     return;
@@ -537,6 +636,7 @@ const handleCut = (socket, targetPlayerId) => {
 
   const actingPlayer = room.players.find((player) => player.id === socket.data.playerId);
   const targetPlayer = room.players.find((player) => player.id === targetPlayerId);
+
   if (!actingPlayer || !targetPlayer) {
     io.to(socket.id).emit("error:message", serverText.targetPlayerNotFound);
     return;
@@ -544,22 +644,18 @@ const handleCut = (socket, targetPlayerId) => {
 
   const blockedTargetId = room.game.blockedDrawTargets?.[actingPlayer.id];
   if (blockedTargetId && blockedTargetId === targetPlayer.id) {
-    io.to(socket.id).emit(
-      "error:message",
-      `Vous ne pouvez pas viser ${targetPlayer.name} ce tour-ci.`
-    );
+    io.to(socket.id).emit("error:message", serverText.blockedTarget(targetPlayer.name));
     return;
   }
 
-  const availableWires = targetPlayer.wires.filter((wire) => !wire.revealed);
+  const availableWires = targetPlayer.wires.filter((wire) => !wire.isRevealed);
   if (!availableWires.length) {
     io.to(socket.id).emit("error:message", serverText.noHiddenWiresRemaining);
     return;
   }
 
-  const selectedWire =
-    availableWires[Math.floor(Math.random() * availableWires.length)];
-  selectedWire.revealed = true;
+  const selectedWire = availableWires[Math.floor(Math.random() * availableWires.length)];
+  selectedWire.isRevealed = true;
 
   const revealedCard = {
     id: randomId(),
@@ -574,16 +670,14 @@ const handleCut = (socket, targetPlayerId) => {
   room.game.lastRevealed = revealedCard;
   room.game.lastCutTargetId = targetPlayer.id;
   room.game.blockedDrawTargets[targetPlayer.id] = actingPlayer.id;
-  room.game.remainingDeck = room.game.remainingDeck.filter(
-    (card) => card.id !== selectedWire.id
-  );
 
-  const ended = endGameIfNeeded(room, selectedWire.type, targetPlayer);
-  assertPersistentDeckIntegrity(room.game);
+  const ended = endGameIfNeeded(room, selectedWire.type);
+  assertDeckIntegrity(room);
+
   if (!ended) {
     room.game.actionsRemainingInRound = Math.max(
       0,
-      (room.game.actionsRemainingInRound ?? room.game.cardsPerPlayer) - 1
+      (room.game.actionsRemainingInRound ?? 0) - 1
     );
 
     if (room.game.blockedDrawTargets[actingPlayer.id]) {
@@ -592,10 +686,7 @@ const handleCut = (socket, targetPlayerId) => {
 
     if (room.game.actionsRemainingInRound === 0) {
       if (room.game.currentRound >= room.game.maxRounds) {
-        room.game.status = "ended";
-        room.game.winner = "Moriarty";
-        room.game.winningTeam = "Moriarty";
-        addSystemChat(room, serverText.maxRoundsReached);
+        endGame(room, "Moriarty", serverText.maxRoundsReached);
       } else {
         startRound(room, room.game.currentRound + 1, room.game.lastCutTargetId);
       }
@@ -610,7 +701,10 @@ const handleCut = (socket, targetPlayerId) => {
 const handleChat = (socket, message) => {
   const room = ensureRoom(socket.data.roomCode);
   const player = room?.players.find((entry) => entry.id === socket.data.playerId);
-  if (!room || !player || !message.trim()) return;
+
+  if (!room || !player || !message.trim()) {
+    return;
+  }
 
   room.chat.push({
     id: randomId(),
@@ -620,6 +714,7 @@ const handleChat = (socket, message) => {
     message: message.slice(0, 220),
     createdAt: Date.now()
   });
+
   room.chat = room.chat.slice(-CHAT_LIMIT);
   emitRoomState(room);
 };
@@ -630,6 +725,7 @@ io.on("connection", (socket) => {
       io.to(socket.id).emit("error:message", serverText.invalidPlayerName);
       return;
     }
+
     moveSocketOutOfCurrentRoom(socket);
     createRoom(socket, name.trim(), avatarId);
   });
@@ -639,6 +735,7 @@ io.on("connection", (socket) => {
       io.to(socket.id).emit("error:message", serverText.enterRoomCodeAndName);
       return;
     }
+
     moveSocketOutOfCurrentRoom(socket);
     joinRoom(socket, code.trim().toUpperCase(), name.trim(), avatarId);
   });
