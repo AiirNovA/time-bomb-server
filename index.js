@@ -307,14 +307,19 @@ const resolveOpeningPlayerId = (room, preferredPlayerId = null) => {
 };
 
 const startRound = (room, roundNumber, preferredOpeningPlayerId = null) => {
-  const { perPlayerTarget, distributedCount } = buildPlayerHandsFromDeck(room, roundNumber);
+  const { perPlayerTarget } = buildPlayerHandsFromDeck(room, roundNumber);
   const openingPlayerId = resolveOpeningPlayerId(room, preferredOpeningPlayerId);
+
+  const playersCount = activePlayers(room).length;
 
   room.game.status = "playing";
   room.game.currentRound = roundNumber;
   room.game.cardsPerPlayer = perPlayerTarget;
-  room.game.roundActionCount = distributedCount;
-  room.game.actionsRemainingInRound = distributedCount;
+  
+  // TRÈS IMPORTANT : Le nombre de coupes est égal au nombre de joueurs !
+  room.game.actionsRemainingInRound = playersCount; 
+  room.game.roundActionCount = playersCount;
+  
   room.game.currentCutterId = openingPlayerId;
   room.game.blockedDrawTargets = {};
   room.game.lastRevealed = null;
@@ -667,6 +672,84 @@ const handleCut = (socket, targetPlayerId) => {
 };
 
 const handleCut = (socket, targetPlayerId) => {
+  const room = ensureRoom(socket.data.roomCode);
+  if (!room || room.game.status !== "playing") return;
+
+  // Vérification du tour
+  if (room.game.currentCutterId !== socket.data.playerId) {
+    io.to(socket.id).emit("error:message", serverText.notYourTurn);
+    return;
+  }
+
+  const targetPlayer = room.players.find(p => p.id === targetPlayerId);
+  if (!targetPlayer) return;
+
+  const availableWires = targetPlayer.wires.filter(w => !w.isRevealed);
+  if (availableWires.length === 0) {
+    io.to(socket.id).emit("error:message", serverText.noHiddenWiresRemaining);
+    return;
+  }
+
+  // Sélection aléatoire d'une carte chez la cible
+  const selectedWire = availableWires[Math.floor(Math.random() * availableWires.length)];
+  selectedWire.isRevealed = true;
+  
+  const actingPlayer = room.players.find(p => p.id === socket.data.playerId);
+  const revealedCard = {
+    id: randomId(),
+    type: selectedWire.type,
+    playerId: targetPlayer.id,
+    playerName: targetPlayer.name,
+    revealedBy: actingPlayer.name,
+    revealedAt: Date.now()
+  };
+
+  room.game.revealedCards.push(revealedCard);
+  room.game.lastRevealed = revealedCard;
+  room.game.lastCutTargetId = targetPlayer.id; // Le visé aura la main au tour/manche d'après
+
+  // --- LOGIQUE DE VICTOIRE IMMÉDIATE ---
+  
+  // 1. BIG BEN
+  if (selectedWire.type === "big_ben") {
+    room.game.revealedBigBenCount = 1;
+    endGame(room, "Moriarty", serverText.bigBenTriggered);
+    emitRoomState(room);
+    return;
+  }
+
+  // 2. CÂBLES DORÉS
+  if (selectedWire.type === "golden_cable") {
+    room.game.revealedGoldenCableCount += 1;
+    if (room.game.revealedGoldenCableCount >= room.game.goldenCableTarget) {
+      endGame(room, "Sherlock", serverText.enoughGoldenCables);
+      emitRoomState(room);
+      return;
+    }
+  } else {
+    room.game.revealedNeutralCableCount += 1;
+  }
+
+  // --- GESTION DES TOURS ET MANCHES ---
+  
+  room.game.actionsRemainingInRound -= 1;
+
+  if (room.game.actionsRemainingInRound <= 0) {
+    // Si c'était la dernière action de la manche 4
+    if (room.game.currentRound >= room.game.maxRounds) {
+      endGame(room, "Moriarty", serverText.maxRoundsReached);
+    } else {
+      // Sinon, on passe à la manche suivante
+      startRound(room, room.game.currentRound + 1, room.game.lastCutTargetId);
+    }
+  } else {
+    // La manche continue, le tour passe à celui qui a été coupé
+    room.game.currentCutterId = targetPlayer.id;
+  }
+
+  emitRoomState(room);
+};
+
   const room = ensureRoom(socket.data.roomCode);
   if (!room) {
     return;
