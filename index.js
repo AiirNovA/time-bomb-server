@@ -213,6 +213,17 @@ const assignRolesIfNeeded = (room) => {
 };
 
 const clearHands = (room) => {
+  room.players.forEach(player => {
+    player.wires = []; // On vide REELLEMENT le tableau des cartes du joueur
+  });
+  
+  room.game.deck.forEach(card => {
+    if (!card.isRevealed) {
+      card.holderPlayerId = null;
+    }
+  });
+};
+
   room.players.forEach((player) => {
     player.wires = [];
   });
@@ -254,6 +265,69 @@ const assertDeckIntegrity = (room) => {
 };
 
 const buildPlayerHandsFromDeck = (room, roundNumber) => {
+  const players = activePlayers(room);
+  
+  // 1. On vide les mains de TOUS les joueurs (Nettoyage total)
+  players.forEach(p => {
+    p.wires = [];
+  });
+
+  // 2. On prend UNIQUEMENT les cartes qui sont encore face cachée dans le deck
+  // C'est ici que tes 3 câbles dorés déjà trouvés sont définitivement écartés
+  let cardsToDistribute = shuffle(room.game.deck.filter(c => c.isRevealed === false));
+  
+  const perPlayerTarget = Math.floor(cardsToDistribute.length / players.length);
+  
+  // 3. Distribution
+  for (let i = 0; i < perPlayerTarget; i++) {
+    players.forEach(player => {
+      if (cardsToDistribute.length > 0) {
+        const card = cardsToDistribute.pop();
+        card.holderPlayerId = player.id;
+        // On NE TOUCHE PAS à card.isRevealed ici, elle est déjà à false.
+        player.wires.push(card);
+      }
+    });
+  }
+
+  return {
+    perPlayerTarget,
+    distributedCount: perPlayerTarget * players.length
+  };
+};
+
+  const players = activePlayers(room);
+  
+  // 1. On ne prend QUE les cartes non révélées
+  // On s'assure qu'elles restent bien isRevealed = false
+  let cardsToDistribute = shuffle(room.game.deck.filter(c => !c.isRevealed));
+  
+  const perPlayerTarget = Math.floor(cardsToDistribute.length / players.length);
+  
+  // 2. On vide les mains actuelles SANS toucher au deck global
+  players.forEach(p => {
+    p.wires = [];
+  });
+
+  // 3. Distribution stricte
+  for (let i = 0; i < perPlayerTarget; i++) {
+    players.forEach(player => {
+      if (cardsToDistribute.length > 0) {
+        const card = cardsToDistribute.pop();
+        card.holderPlayerId = player.id;
+        // On s'assure que la carte est bien considérée comme non révélée pour ce tour
+        card.isRevealed = false; 
+        player.wires.push(card);
+      }
+    });
+  }
+
+  return {
+    perPlayerTarget,
+    distributedCount: perPlayerTarget * players.length
+  };
+};
+
   const players = activePlayers(room);
   // 1. On récupère TOUTES les cartes non révélées (Câbles dorés, neutres, Big Ben)
   let unrevealedCards = shuffle(collectUnrevealedCards(room));
