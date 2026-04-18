@@ -80,13 +80,9 @@ const emitRoomState = (room) => {
 };
 
 const startRound = (room, roundNumber, openingId = null) => {
-  // 1. Vidage des mains précédent pour éviter les doublons
   room.players.forEach(p => p.wires = []);
-  
-  // 2. Pioche des cartes non révélées uniquement
   let cardsToDistribute = shuffle(room.game.deck.filter(c => !c.isRevealed));
   
-  // 3. Distribution équitable
   let i = 0;
   while (cardsToDistribute.length > 0) {
     const card = cardsToDistribute.pop();
