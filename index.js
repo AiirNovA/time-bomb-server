@@ -7,32 +7,11 @@ import { Server } from "socket.io";
 
 const PORT = process.env.PORT || 3001;
 const CLIENT_URL = process.env.CLIENT_URL || "http://localhost:5173";
-const ROOM_CODE_LENGTH = 6;
-const BIG_BEN_CARDS = 1;
 const MAX_ROUNDS = 4;
-const CHAT_LIMIT = 80;
-
-const ALLOWED_AVATAR_IDS = new Set([
-  "detective-loupe", "top-hat", "umbrella-lady", "yard-inspector",
-  "inventor", "newspaper-boy", "chemist", "masked-noble"
-]);
 
 const rooms = new Map();
-
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-
-const serverText = {
-  system: "Systeme",
-  roomNotFound: "Salle introuvable.",
-  matchStarted: "La partie a commence !",
-  enoughGoldenCables: "Tous les cables dores ont ete trouves. Les Sherlock gagnent !",
-  bigBenTriggered: "Big Ben a ete revele ! Les Moriarty gagnent.",
-  maxRoundsReached: "Fin de la 4eme manche. Les Moriarty gagnent.",
-  notYourTurn: "Ce n'est pas votre tour.",
-  noHiddenWiresRemaining: "Plus de cartes cachees chez ce joueur.",
-  roundStarted: (round, cards) => `Manche ${round} : ${cards} cartes par joueur.`
-};
 
 const app = express();
 app.use(cors({ origin: CLIENT_URL, credentials: true }));
@@ -41,7 +20,6 @@ app.use(express.static(path.resolve(__dirname, "../client/dist")));
 const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: "*" } });
 
-// --- UTILS ---
 const randomId = () => Math.random().toString(36).slice(2, 10);
 const shuffle = (items) => {
   const copy = [...items];
@@ -55,7 +33,8 @@ const shuffle = (items) => {
 // --- LOGIQUE DE JEU ---
 
 const createPersistentDeck = (playerCount) => {
-  const counts = playerCount === 4 ? { n: 15, g: 4 } : { n: 19, g: 5 }; // Simplifié pour test
+  // Config stricte : 4 joueurs = 15 neutres, 4 dorés, 1 Big Ben = 20 cartes
+  const counts = { n: 15, g: 4 }; 
   const deck = [];
   for (let i = 0; i < counts.n; i++) deck.push({ id: randomId(), type: "neutral_cable", isRevealed: false });
   for (let i = 0; i < counts.g; i++) deck.push({ id: randomId(), type: "golden_cable", isRevealed: false });
@@ -64,14 +43,12 @@ const createPersistentDeck = (playerCount) => {
 };
 
 const buildPlayerHandsFromDeck = (room) => {
-  // IMPORTANT : On prend TOUS les joueurs inscrits, pas seulement les connectés
-  const allPlayers = room.players; 
+  const allPlayers = room.players;
   allPlayers.forEach(p => p.wires = []);
 
+  // On ne prend QUE les cartes qui n'ont pas encore été révélées
   let cardsToDistribute = shuffle(room.game.deck.filter(c => !c.isRevealed));
   
-  console.log(`Distribution : ${cardsToDistribute.length} cartes pour ${allPlayers.length} joueurs.`);
-
   let i = 0;
   while (cardsToDistribute.length > 0) {
     const card = cardsToDistribute.pop();
@@ -89,22 +66,21 @@ const startRound = (room, roundNumber, openingId = null) => {
   room.game.currentRound = roundNumber;
   room.game.cardsPerPlayer = cardsPerPlayer;
   room.game.actionsRemainingInRound = room.players.length;
-  room.game.currentCutterId = openingId || room.players[Math.floor(Math.random() * room.players.length)].id;
-  
-  room.chat.push({ id: randomId(), system: true, message: serverText.roundStarted(roundNumber, cardsPerPlayer) });
+  room.game.currentCutterId = openingId || room.players[0].id;
 };
 
 const handleCut = (socket, targetId) => {
   const room = rooms.get(socket.data.roomCode);
-  if (!room || room.game.status !== "playing" || room.game.currentCutterId !== socket.data.playerId) return;
+  if (!room || room.game.status !== "playing") return;
+  if (room.game.currentCutterId !== socket.data.playerId) return;
 
   const target = room.players.find(p => p.id === targetId);
-  if (!target) return;
+  if (!target || target.id === socket.data.playerId) return;
 
   const wire = target.wires.find(w => !w.isRevealed);
   if (!wire) return;
 
-  wire.isRevealed = true;
+  wire.isRevealed = true; // Marque la carte dans le deck persistant
   room.game.revealedCards.push({ type: wire.type, playerName: target.name });
 
   if (wire.type === "big_ben") {
@@ -134,10 +110,8 @@ const handleCut = (socket, targetId) => {
   emitRoomState(room);
 };
 
-// --- GESTION DES SOCKETS ---
-
 const emitRoomState = (room) => {
-  room.players.forEach(p => {
+  room.players.forEach(recipient => {
     const state = {
       code: room.code,
       players: room.players.map(pl => ({
@@ -145,25 +119,31 @@ const emitRoomState = (room) => {
         name: pl.name,
         connected: pl.connected,
         wires: pl.wires.map(w => ({
-          type: (w.isRevealed || pl.id === p.id || room.game.status === "ended") ? w.type : "hidden",
+          type: (w.isRevealed || pl.id === recipient.id || room.game.status === "ended") ? w.type : "hidden",
           revealed: w.isRevealed
         }))
       })),
       game: room.game
     };
-    io.to(pl.socketId).emit("room:update", state);
+    io.to(recipient.socketId).emit("room:update", state);
   });
 };
 
 io.on("connection", (socket) => {
   socket.on("room:create", ({ name }) => {
     const code = Math.random().toString(36).slice(2, 8).toUpperCase();
-    const player = { id: randomId(), socketId: socket.id, name, connected: true, wires: [], role: "Hidden" };
+    const player = { id: randomId(), socketId: socket.id, name, connected: true, wires: [] };
     const room = {
       code,
       players: [player],
-      chat: [],
-      game: { status: "waiting", currentRound: 0, revealedGoldenCableCount: 0, goldenCableTarget: 4, revealedCards: [] }
+      game: { 
+        status: "waiting", 
+        currentRound: 0, 
+        revealedGoldenCableCount: 0, 
+        goldenCableTarget: 4, 
+        revealedCards: [],
+        deck: [] 
+      }
     };
     rooms.set(code, room);
     socket.data = { roomCode: code, playerId: player.id };
@@ -173,8 +153,8 @@ io.on("connection", (socket) => {
 
   socket.on("room:join", ({ code, name }) => {
     const room = rooms.get(code.toUpperCase());
-    if (!room) return;
-    const player = { id: randomId(), socketId: socket.id, name, connected: true, wires: [], role: "Hidden" };
+    if (!room || room.game.status !== "waiting") return;
+    const player = { id: randomId(), socketId: socket.id, name, connected: true, wires: [] };
     room.players.push(player);
     socket.data = { roomCode: code.toUpperCase(), playerId: player.id };
     socket.join(code.toUpperCase());
@@ -183,7 +163,9 @@ io.on("connection", (socket) => {
 
   socket.on("game:start", () => {
     const room = rooms.get(socket.data.roomCode);
-    if (!room) return;
+    // VERROU : On ne lance que si on est en attente
+    if (!room || room.game.status !== "waiting") return;
+    
     room.game.deck = createPersistentDeck(room.players.length);
     startRound(room, 1);
     emitRoomState(room);
@@ -195,10 +177,11 @@ io.on("connection", (socket) => {
     const room = rooms.get(socket.data.roomCode);
     if (room) {
       const player = room.players.find(p => p.id === socket.data.playerId);
-      if (player) player.connected = false; // On ne le supprime PAS
+      if (player) player.connected = false;
       emitRoomState(room);
     }
   });
 });
 
+app.get("*", (req, res) => res.sendFile(path.join(__dirname, "../client/dist/index.html")));
 server.listen(PORT, () => console.log(`Server on ${PORT}`));
