@@ -2,6 +2,7 @@ import express from "express";
 import cors from "cors";
 import http from "http";
 import path from "path";
+import fs from "fs"; // Ajouté pour la sécurité
 import { fileURLToPath } from "url";
 import { Server } from "socket.io";
 
@@ -15,7 +16,6 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 app.use(cors({ origin: CLIENT_URL, credentials: true }));
-app.use(express.static(path.resolve(__dirname, "../client/dist")));
 
 const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: "*" } });
@@ -80,7 +80,10 @@ const emitRoomState = (room) => {
 };
 
 const startRound = (room, roundNumber, openingId = null) => {
+  // NETTOYAGE CRUCIAL : On vide les mains avant de redistribuer
   room.players.forEach(p => p.wires = []);
+  
+  // On ne prend que les cartes non révélées
   let cardsToDistribute = shuffle(room.game.deck.filter(c => !c.isRevealed));
   
   let i = 0;
@@ -186,5 +189,14 @@ io.on("connection", (socket) => {
   });
 });
 
-app.get("*", (req, res) => res.sendFile(path.join(__dirname, "../client/dist/index.html")));
+// --- SERVIR LE FRONT-END (CORRIGÉ) ---
+
+const clientPath = path.resolve(__dirname, "dist");
+
+app.use(express.static(clientPath));
+
+app.get("*", (req, res) => {
+  res.sendFile(path.join(clientPath, "index.html"));
+});
+
 server.listen(PORT, () => console.log(`Serveur opérationnel sur le port ${PORT}`));
