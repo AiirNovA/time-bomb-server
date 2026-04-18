@@ -31,11 +31,9 @@ const shuffle = (items) => {
   return copy;
 };
 
-// --- LOGIQUE DE JEU DYNAMIQUE ---
-
 const createDynamicDeck = (playerCount) => {
   const totalCards = playerCount * 5; 
-  const goldenCables = playerCount; // Règle officielle : autant de dorés que de joueurs
+  const goldenCables = playerCount; 
   const bigBen = 1;
   const neutrals = totalCards - goldenCables - bigBen;
 
@@ -43,37 +41,19 @@ const createDynamicDeck = (playerCount) => {
   for (let i = 0; i < neutrals; i++) deck.push({ id: randomId(), type: "neutral_cable", isRevealed: false });
   for (let i = 0; i < goldenCables; i++) deck.push({ id: randomId(), type: "golden_cable", isRevealed: false });
   deck.push({ id: randomId(), type: "big_ben", isRevealed: false });
-
-  console.log(`[LOG] Deck créé pour ${playerCount} joueurs : ${totalCards} cartes au total.`);
   return shuffle(deck);
-};
-
-const buildPlayerHandsFromDeck = (room) => {
-  room.players.forEach(p => p.wires = []);
-  let cardsToDistribute = shuffle(room.game.deck.filter(c => !c.isRevealed));
-  
-  let i = 0;
-  while (cardsToDistribute.length > 0) {
-    const card = cardsToDistribute.pop();
-    const currentPlayer = room.players[i % room.players.length];
-    currentPlayer.wires.push(card);
-    i++;
-  }
-  return room.players[0]?.wires.length || 0;
 };
 
 const emitRoomState = (room) => {
   room.players.forEach((recipient) => {
     if (!recipient.socketId) return;
 
-    // Construction d'une vue personnalisée pour chaque joueur
     const safePlayers = room.players.map(pl => ({
       id: pl.id,
       name: pl.name,
       connected: pl.connected,
       wires: pl.wires.map(w => ({
-        id: w.id,
-        // On ne voit le type que si : révélé OU c'est ma main OU partie finie
+        id: w.id, // L'ID est la clé pour éviter les doublons visuels
         type: (w.isRevealed || pl.id === recipient.id || room.game.status === "ended") ? w.type : "hidden",
         revealed: w.isRevealed
       }))
@@ -98,14 +78,22 @@ const emitRoomState = (room) => {
 };
 
 const startRound = (room, roundNumber, openingId = null) => {
+  room.players.forEach(p => p.wires = []);
+  let cardsToDistribute = shuffle(room.game.deck.filter(c => !c.isRevealed));
+  
+  let i = 0;
+  while (cardsToDistribute.length > 0) {
+    const card = cardsToDistribute.pop();
+    const currentPlayer = room.players[i % room.players.length];
+    currentPlayer.wires.push(card);
+    i++;
+  }
+
   room.game.currentRound = roundNumber;
-  const cardsPerPlayer = buildPlayerHandsFromDeck(room);
   room.game.status = "playing";
   room.game.actionsRemainingInRound = room.players.length;
   room.game.currentCutterId = openingId || room.players[0].id;
 };
-
-// --- GESTION DES CONNEXIONS ---
 
 io.on("connection", (socket) => {
   socket.on("room:create", ({ name }) => {
@@ -125,7 +113,6 @@ io.on("connection", (socket) => {
   socket.on("room:join", ({ code, name }) => {
     const room = rooms.get(code?.toUpperCase());
     if (!room || room.game.status !== "waiting" || room.players.length >= 8) return;
-    
     const player = { id: randomId(), socketId: socket.id, name, connected: true, wires: [] };
     room.players.push(player);
     socket.data = { roomCode: room.code, playerId: player.id };
@@ -136,21 +123,17 @@ io.on("connection", (socket) => {
   socket.on("game:start", () => {
     const room = rooms.get(socket.data.roomCode);
     if (!room || room.game.status !== "waiting" || room.players.length < 4) return;
-    
-    const count = room.players.length;
-    room.game.deck = createDynamicDeck(count);
-    room.game.goldenCableTarget = count; 
+    room.game.deck = createDynamicDeck(room.players.length);
+    room.game.goldenCableTarget = room.players.length;
     room.game.revealedGoldenCableCount = 0;
     room.game.revealedCards = [];
-    
     startRound(room, 1);
     emitRoomState(room);
   });
 
   socket.on("turn:cut", ({ targetPlayerId }) => {
     const room = rooms.get(socket.data.roomCode);
-    if (!room || room.game.status !== "playing") return;
-    if (room.game.currentCutterId !== socket.data.playerId) return;
+    if (!room || room.game.status !== "playing" || room.game.currentCutterId !== socket.data.playerId) return;
 
     const target = room.players.find(p => p.id === targetPlayerId);
     if (!target || target.id === socket.data.playerId) return;
@@ -179,6 +162,7 @@ io.on("connection", (socket) => {
           room.game.status = "ended";
           room.game.winner = "Moriarty";
         } else {
+          // IMPORTANT: On attend un tout petit peu avant de lancer le round suivant pour laisser les sockets respirer
           startRound(room, room.game.currentRound + 1, target.id);
         }
       } else {
