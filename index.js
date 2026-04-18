@@ -20,6 +20,7 @@ app.use(express.static(path.resolve(__dirname, "../client/dist")));
 const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: "*" } });
 
+// --- UTILS ---
 const randomId = () => Math.random().toString(36).slice(2, 10);
 const shuffle = (items) => {
   const copy = [...items];
@@ -33,41 +34,71 @@ const shuffle = (items) => {
 // --- LOGIQUE DE JEU ---
 
 const createPersistentDeck = (playerCount) => {
-  // Config stricte : 4 joueurs = 15 neutres, 4 dorés, 1 Big Ben = 20 cartes
-  const counts = { n: 15, g: 4 }; 
+  // Config stricte pour 4 joueurs : 15 + 4 + 1 = 20 cartes
+  const n = 15, g = 4;
   const deck = [];
-  for (let i = 0; i < counts.n; i++) deck.push({ id: randomId(), type: "neutral_cable", isRevealed: false });
-  for (let i = 0; i < counts.g; i++) deck.push({ id: randomId(), type: "golden_cable", isRevealed: false });
+  for (let i = 0; i < n; i++) deck.push({ id: randomId(), type: "neutral_cable", isRevealed: false });
+  for (let i = 0; i < g; i++) deck.push({ id: randomId(), type: "golden_cable", isRevealed: false });
   deck.push({ id: randomId(), type: "big_ben", isRevealed: false });
+  
+  console.log(`[SERVEUR] Deck généré : ${deck.length} cartes (Neutres: ${n}, Dorés: ${g}, Big Ben: 1)`);
   return shuffle(deck);
 };
 
 const buildPlayerHandsFromDeck = (room) => {
-  const allPlayers = room.players;
-  allPlayers.forEach(p => p.wires = []);
-
-  // On ne prend QUE les cartes qui n'ont pas encore été révélées
+  room.players.forEach(p => p.wires = []);
   let cardsToDistribute = shuffle(room.game.deck.filter(c => !c.isRevealed));
   
+  console.log(`[SERVEUR] Distribution Manche ${room.game.currentRound + 1} : ${cardsToDistribute.length} cartes pour ${room.players.length} joueurs.`);
+
   let i = 0;
   while (cardsToDistribute.length > 0) {
     const card = cardsToDistribute.pop();
-    const currentPlayer = allPlayers[i % allPlayers.length];
+    const currentPlayer = room.players[i % room.players.length];
     card.holderPlayerId = currentPlayer.id;
     currentPlayer.wires.push(card);
     i++;
   }
-  return allPlayers[0]?.wires.length || 0;
+  return room.players[0]?.wires.length || 0;
 };
 
 const startRound = (room, roundNumber, openingId = null) => {
+  room.game.currentRound = roundNumber;
   const cardsPerPlayer = buildPlayerHandsFromDeck(room);
   room.game.status = "playing";
-  room.game.currentRound = roundNumber;
   room.game.cardsPerPlayer = cardsPerPlayer;
   room.game.actionsRemainingInRound = room.players.length;
   room.game.currentCutterId = openingId || room.players[0].id;
 };
+
+const emitRoomState = (room) => {
+  room.players.forEach((recipient) => {
+    if (!recipient.socketId) return;
+
+    const state = {
+      code: room.code,
+      selfId: recipient.id,
+      players: room.players.map(pl => ({
+        id: pl.id,
+        name: pl.name,
+        connected: pl.connected,
+        // On ne voit le type QUE si c'est notre main, ou si c'est révélé, ou si c'est fini
+        wires: pl.wires.map(w => ({
+          id: w.id,
+          type: (w.isRevealed || pl.id === recipient.id || room.game.status === "ended") ? w.type : "hidden",
+          revealed: w.isRevealed
+        }))
+      })),
+      game: {
+        ...room.game,
+        deck: [] // On n'envoie jamais le deck complet au client par sécurité
+      }
+    };
+    io.to(recipient.socketId).emit("room:update", state);
+  });
+};
+
+// --- HANDLERS ---
 
 const handleCut = (socket, targetId) => {
   const room = rooms.get(socket.data.roomCode);
@@ -80,7 +111,7 @@ const handleCut = (socket, targetId) => {
   const wire = target.wires.find(w => !w.isRevealed);
   if (!wire) return;
 
-  wire.isRevealed = true; // Marque la carte dans le deck persistant
+  wire.isRevealed = true;
   room.game.revealedCards.push({ type: wire.type, playerName: target.name });
 
   if (wire.type === "big_ben") {
@@ -110,25 +141,6 @@ const handleCut = (socket, targetId) => {
   emitRoomState(room);
 };
 
-const emitRoomState = (room) => {
-  room.players.forEach(recipient => {
-    const state = {
-      code: room.code,
-      players: room.players.map(pl => ({
-        id: pl.id,
-        name: pl.name,
-        connected: pl.connected,
-        wires: pl.wires.map(w => ({
-          type: (w.isRevealed || pl.id === recipient.id || room.game.status === "ended") ? w.type : "hidden",
-          revealed: w.isRevealed
-        }))
-      })),
-      game: room.game
-    };
-    io.to(recipient.socketId).emit("room:update", state);
-  });
-};
-
 io.on("connection", (socket) => {
   socket.on("room:create", ({ name }) => {
     const code = Math.random().toString(36).slice(2, 8).toUpperCase();
@@ -152,21 +164,24 @@ io.on("connection", (socket) => {
   });
 
   socket.on("room:join", ({ code, name }) => {
-    const room = rooms.get(code.toUpperCase());
+    const room = rooms.get(code?.toUpperCase());
     if (!room || room.game.status !== "waiting") return;
     const player = { id: randomId(), socketId: socket.id, name, connected: true, wires: [] };
     room.players.push(player);
-    socket.data = { roomCode: code.toUpperCase(), playerId: player.id };
-    socket.join(code.toUpperCase());
+    socket.data = { roomCode: room.code, playerId: player.id };
+    socket.join(room.code);
     emitRoomState(room);
   });
 
   socket.on("game:start", () => {
     const room = rooms.get(socket.data.roomCode);
-    // VERROU : On ne lance que si on est en attente
     if (!room || room.game.status !== "waiting") return;
     
+    // RESET TOTAL
+    room.game.revealedGoldenCableCount = 0;
+    room.game.revealedCards = [];
     room.game.deck = createPersistentDeck(room.players.length);
+    
     startRound(room, 1);
     emitRoomState(room);
   });
@@ -184,4 +199,4 @@ io.on("connection", (socket) => {
 });
 
 app.get("*", (req, res) => res.sendFile(path.join(__dirname, "../client/dist/index.html")));
-server.listen(PORT, () => console.log(`Server on ${PORT}`));
+server.listen(PORT, () => console.log(`Serveur prêt sur le port ${PORT}`));
