@@ -11,17 +11,10 @@ const ROOM_CODE_LENGTH = 6;
 const BIG_BEN_CARDS = 1;
 const MAX_ROUNDS = 4;
 const CHAT_LIMIT = 80;
-const ROUND_HAND_SIZES = [5, 4, 3, 2];
 
 const ALLOWED_AVATAR_IDS = new Set([
-  "detective-loupe",
-  "top-hat",
-  "umbrella-lady",
-  "yard-inspector",
-  "inventor",
-  "newspaper-boy",
-  "chemist",
-  "masked-noble"
+  "detective-loupe", "top-hat", "umbrella-lady", "yard-inspector",
+  "inventor", "newspaper-boy", "chemist", "masked-noble"
 ]);
 
 const rooms = new Map();
@@ -31,429 +24,181 @@ const __dirname = path.dirname(__filename);
 
 const serverText = {
   system: "Systeme",
-  currentCutterWaiting: "En attente",
   roomNotFound: "Salle introuvable.",
-  roomFull: "Cette salle est deja pleine.",
-  matchAlreadyStarted: "La partie a deja commence.",
-  hostNow: (name) => `${name} est maintenant l'hote.`,
-  createdRoom: (name) => `${name} a cree la salle.`,
-  joinedRoom: (name) => `${name} a rejoint la salle.`,
-  leftRoom: (name) => `${name} a quitte la salle.`,
-  tooManyPlayersLeft: "Trop de joueurs sont partis. La partie est terminee.",
-  onlyHostCanStart: "Seul l'hote peut lancer la partie.",
-  connectedPlayersRequired: "Une partie necessite entre 4 et 8 joueurs connectes.",
-  matchStarted: "La partie a commence. Les roles et les cartes ont ete attribues.",
-  enoughGoldenCables: "Tous les cables dores ont ete trouves. Les Sherlock gagnent.",
-  bigBenTriggered: "Big Ben a ete revele. Les Moriarty gagnent immediatement.",
-  maxRoundsReached: "La 4e manche est terminee sans victoire des Sherlock. Les Moriarty gagnent.",
-  gameNotInProgress: "La partie n'est pas en cours.",
+  matchStarted: "La partie a commence !",
+  enoughGoldenCables: "Tous les cables dores ont ete trouves. Les Sherlock gagnent !",
+  bigBenTriggered: "Big Ben a ete revele ! Les Moriarty gagnent.",
+  maxRoundsReached: "Fin de la 4eme manche. Les Moriarty gagnent.",
   notYourTurn: "Ce n'est pas votre tour.",
-  mustTargetAnotherPlayer: "Vous devez viser un autre joueur.",
-  targetPlayerNotFound: "Joueur cible introuvable.",
-  noHiddenWiresRemaining: "Ce joueur n'a plus de cartes cachees.",
-  invalidPlayerName: "Saisissez un nom de joueur valide.",
-  enterRoomCodeAndName: "Saisissez un code de salle et un nom de joueur.",
-  roundStarted: (roundNumber, cardsPerPlayer) =>
-    `Manche ${roundNumber} : distribution de ${cardsPerPlayer} cartes maximum par joueur.`,
-  blockedTarget: (name) => `Vous ne pouvez pas viser ${name} ce tour-ci.`
+  noHiddenWiresRemaining: "Plus de cartes cachees chez ce joueur.",
+  roundStarted: (round, cards) => `Manche ${round} : ${cards} cartes par joueur.`
 };
 
 const app = express();
 app.use(cors({ origin: CLIENT_URL, credentials: true }));
-app.use(express.json());
-
-app.get("/health", (_request, response) => {
-  response.json({ ok: true });
-});
-
-const clientDistPath = path.resolve(__dirname, "../client/dist");
-app.use(express.static(clientDistPath));
+app.use(express.static(path.resolve(__dirname, "../client/dist")));
 
 const server = http.createServer(app);
-const io = new Server(server, {
-  cors: {
-    origin: "*",
-    methods: ["GET", "POST"]
-  }
-});
+const io = new Server(server, { cors: { origin: "*" } });
 
-// --- UTILITAIRES ---
-
+// --- UTILS ---
 const randomId = () => Math.random().toString(36).slice(2, 10);
-
 const shuffle = (items) => {
   const copy = [...items];
-  for (let index = copy.length - 1; index > 0; index -= 1) {
-    const swapIndex = Math.floor(Math.random() * (index + 1));
-    [copy[index], copy[swapIndex]] = [copy[swapIndex], copy[index]];
+  for (let i = copy.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [copy[i], copy[j]] = [copy[j], copy[i]];
   }
   return copy;
 };
 
-const generateCode = () => {
-  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-  let code = "";
-  do {
-    code = Array.from({ length: ROOM_CODE_LENGTH }, () => {
-      const index = Math.floor(Math.random() * alphabet.length);
-      return alphabet[index];
-    }).join("");
-  } while (rooms.has(code));
-  return code;
-};
-
-const addSystemChat = (room, message) => {
-  room.chat.push({
-    id: randomId(),
-    system: true,
-    playerId: "system",
-    playerName: serverText.system,
-    message,
-    createdAt: Date.now()
-  });
-  room.chat = room.chat.slice(-CHAT_LIMIT);
-};
-
-const activePlayers = (room) => room.players.filter((player) => player.connected);
-
-const sanitizeAvatarId = (avatarId) =>
-  ALLOWED_AVATAR_IDS.has(avatarId) ? avatarId : "detective-loupe";
-
-const teamSplitFor = (playerCount) => {
-  if (playerCount === 4) {
-    return Math.random() < 0.5
-      ? { sherlocks: 3, moriartys: 1 }
-      : { sherlocks: 2, moriartys: 2 };
-  }
-  if (playerCount === 5) return { sherlocks: 3, moriartys: 2 };
-  if (playerCount === 6) return { sherlocks: 4, moriartys: 2 };
-  if (playerCount === 7) {
-    return Math.random() < 0.5
-      ? { sherlocks: 4, moriartys: 3 }
-      : { sherlocks: 5, moriartys: 2 };
-  }
-  return { sherlocks: 5, moriartys: 3 };
-};
-
-const deckCountsFor = (playerCount) => {
-  const countsByPlayers = {
-    4: { neutral: 15, golden: 4, bigBen: BIG_BEN_CARDS },
-    5: { neutral: 19, golden: 5, bigBen: BIG_BEN_CARDS },
-    6: { neutral: 23, golden: 6, bigBen: BIG_BEN_CARDS },
-    7: { neutral: 27, golden: 7, bigBen: BIG_BEN_CARDS },
-    8: { neutral: 31, golden: 8, bigBen: BIG_BEN_CARDS }
-  };
-  return countsByPlayers[playerCount];
-};
-
-// --- GESTION DU DECK ET DES CARTES ---
+// --- LOGIQUE DE JEU ---
 
 const createPersistentDeck = (playerCount) => {
-  const counts = deckCountsFor(playerCount);
+  const counts = playerCount === 4 ? { n: 15, g: 4 } : { n: 19, g: 5 }; // Simplifié pour test
   const deck = [];
-  for (let i = 0; i < counts.neutral; i++) {
-    deck.push({ id: randomId(), type: "neutral_cable", isRevealed: false, holderPlayerId: null });
-  }
-  for (let i = 0; i < counts.golden; i++) {
-    deck.push({ id: randomId(), type: "golden_cable", isRevealed: false, holderPlayerId: null });
-  }
-  deck.push({ id: randomId(), type: "big_ben", isRevealed: false, holderPlayerId: null });
+  for (let i = 0; i < counts.n; i++) deck.push({ id: randomId(), type: "neutral_cable", isRevealed: false });
+  for (let i = 0; i < counts.g; i++) deck.push({ id: randomId(), type: "golden_cable", isRevealed: false });
+  deck.push({ id: randomId(), type: "big_ben", isRevealed: false });
   return shuffle(deck);
 };
 
-const assignRolesIfNeeded = (room) => {
-  const players = activePlayers(room);
-  if (!players.some((player) => player.role === "Hidden")) return;
+const buildPlayerHandsFromDeck = (room) => {
+  // IMPORTANT : On prend TOUS les joueurs inscrits, pas seulement les connectés
+  const allPlayers = room.players; 
+  allPlayers.forEach(p => p.wires = []);
 
-  const split = teamSplitFor(players.length);
-  const roles = shuffle([
-    ...Array.from({ length: split.sherlocks }, () => "Sherlock"),
-    ...Array.from({ length: split.moriartys }, () => "Moriarty")
-  ]);
-  players.forEach((player, index) => { player.role = roles[index]; });
-};
-
-const buildPlayerHandsFromDeck = (room, roundNumber) => {
-  const players = activePlayers(room);
-  players.forEach(p => { p.wires = []; });
-
-  // On distribue TOUTES les cartes non révélées
   let cardsToDistribute = shuffle(room.game.deck.filter(c => !c.isRevealed));
   
+  console.log(`Distribution : ${cardsToDistribute.length} cartes pour ${allPlayers.length} joueurs.`);
+
   let i = 0;
   while (cardsToDistribute.length > 0) {
     const card = cardsToDistribute.pop();
-    const currentPlayer = players[i % players.length];
+    const currentPlayer = allPlayers[i % allPlayers.length];
     card.holderPlayerId = currentPlayer.id;
     currentPlayer.wires.push(card);
     i++;
   }
-
-  return {
-    perPlayerTarget: players[0] ? players[0].wires.length : 0,
-    distributedCount: players.length
-  };
+  return allPlayers[0]?.wires.length || 0;
 };
 
-// --- LOGIQUE DE TOUR ET MANCHE ---
-
-const resolveOpeningPlayerId = (room, preferredPlayerId = null) => {
-  const players = activePlayers(room);
-  if (preferredPlayerId && players.some((p) => p.id === preferredPlayerId)) return preferredPlayerId;
-  if (room.game.lastCutTargetId && players.some((p) => p.id === room.game.lastCutTargetId)) return room.game.lastCutTargetId;
-  return shuffle(players)[0]?.id || null;
-};
-
-const startRound = (room, roundNumber, preferredOpeningPlayerId = null) => {
-  const { perPlayerTarget } = buildPlayerHandsFromDeck(room, roundNumber);
-  const openingPlayerId = resolveOpeningPlayerId(room, preferredOpeningPlayerId);
-  const playersCount = activePlayers(room).length;
-
+const startRound = (room, roundNumber, openingId = null) => {
+  const cardsPerPlayer = buildPlayerHandsFromDeck(room);
   room.game.status = "playing";
   room.game.currentRound = roundNumber;
-  room.game.cardsPerPlayer = perPlayerTarget;
-  room.game.actionsRemainingInRound = playersCount; 
-  room.game.roundActionCount = playersCount;
-  room.game.currentCutterId = openingPlayerId;
-  room.game.lastRevealed = null;
-
-  addSystemChat(room, serverText.roundStarted(roundNumber, perPlayerTarget));
-};
-
-const endGame = (room, winner, message) => {
-  room.game.status = "ended";
-  room.game.winner = winner;
-  room.game.winningTeam = winner;
-  addSystemChat(room, message);
-};
-
-// --- ACTIONS DE JEU ---
-
-const handleCut = (socket, targetPlayerId) => {
-  const room = ensureRoom(socket.data.roomCode);
-  if (!room || room.game.status !== "playing") return;
-
-  if (room.game.currentCutterId !== socket.data.playerId) {
-    io.to(socket.id).emit("error:message", serverText.notYourTurn);
-    return;
-  }
-
-  const targetPlayer = room.players.find(p => p.id === targetPlayerId);
-  if (!targetPlayer) return;
-
-  const availableWires = targetPlayer.wires.filter(w => !w.isRevealed);
-  if (availableWires.length === 0) {
-    io.to(socket.id).emit("error:message", serverText.noHiddenWiresRemaining);
-    return;
-  }
-
-  const selectedWire = availableWires[Math.floor(Math.random() * availableWires.length)];
-  selectedWire.isRevealed = true;
+  room.game.cardsPerPlayer = cardsPerPlayer;
+  room.game.actionsRemainingInRound = room.players.length;
+  room.game.currentCutterId = openingId || room.players[Math.floor(Math.random() * room.players.length)].id;
   
-  const revealedCard = {
-    id: randomId(),
-    type: selectedWire.type,
-    playerId: targetPlayer.id,
-    playerName: targetPlayer.name,
-    revealedBy: room.players.find(p => p.id === socket.data.playerId).name,
-    revealedAt: Date.now()
-  };
+  room.chat.push({ id: randomId(), system: true, message: serverText.roundStarted(roundNumber, cardsPerPlayer) });
+};
 
-  room.game.revealedCards.push(revealedCard);
-  room.game.lastRevealed = revealedCard;
-  room.game.lastCutTargetId = targetPlayer.id;
+const handleCut = (socket, targetId) => {
+  const room = rooms.get(socket.data.roomCode);
+  if (!room || room.game.status !== "playing" || room.game.currentCutterId !== socket.data.playerId) return;
 
-  // Conditions de victoire
-  if (selectedWire.type === "big_ben") {
-    room.game.revealedBigBenCount = 1;
-    endGame(room, "Moriarty", serverText.bigBenTriggered);
-  } else if (selectedWire.type === "golden_cable") {
-    room.game.revealedGoldenCableCount += 1;
+  const target = room.players.find(p => p.id === targetId);
+  if (!target) return;
+
+  const wire = target.wires.find(w => !w.isRevealed);
+  if (!wire) return;
+
+  wire.isRevealed = true;
+  room.game.revealedCards.push({ type: wire.type, playerName: target.name });
+
+  if (wire.type === "big_ben") {
+    room.game.status = "ended";
+    room.game.winner = "Moriarty";
+  } else if (wire.type === "golden_cable") {
+    room.game.revealedGoldenCableCount++;
     if (room.game.revealedGoldenCableCount >= room.game.goldenCableTarget) {
-      endGame(room, "Sherlock", serverText.enoughGoldenCables);
+      room.game.status = "ended";
+      room.game.winner = "Sherlock";
     }
-  } else {
-    room.game.revealedNeutralCableCount += 1;
   }
 
-  // Suite de la manche ou fin de manche
   if (room.game.status === "playing") {
-    room.game.actionsRemainingInRound -= 1;
+    room.game.actionsRemainingInRound--;
     if (room.game.actionsRemainingInRound <= 0) {
-      if (room.game.currentRound >= room.game.maxRounds) {
-        endGame(room, "Moriarty", serverText.maxRoundsReached);
+      if (room.game.currentRound >= MAX_ROUNDS) {
+        room.game.status = "ended";
+        room.game.winner = "Moriarty";
       } else {
-        startRound(room, room.game.currentRound + 1, room.game.lastCutTargetId);
+        startRound(room, room.game.currentRound + 1, target.id);
       }
     } else {
-      room.game.currentCutterId = targetPlayer.id;
+      room.game.currentCutterId = target.id;
     }
   }
-
   emitRoomState(room);
 };
 
-const handleChat = (socket, message) => {
-  const room = ensureRoom(socket.data.roomCode);
-  const player = room?.players.find((entry) => entry.id === socket.data.playerId);
-  if (!room || !player || !message.trim()) return;
-
-  room.chat.push({
-    id: randomId(),
-    system: false,
-    playerId: player.id,
-    playerName: player.name,
-    message: message.slice(0, 220),
-    createdAt: Date.now()
-  });
-  room.chat = room.chat.slice(-CHAT_LIMIT);
-  emitRoomState(room);
-};
-
-// --- GESTION DE L'ETAT ET DES VUES ---
-
-const publicPlayerView = (viewerId, player, gameStatus) => {
-  const isSelf = viewerId === player.id;
-  const revealAll = gameStatus === "ended";
-  return {
-    id: player.id,
-    name: player.name,
-    avatarId: player.avatarId,
-    isHost: player.isHost,
-    connected: player.connected,
-    role: isSelf || revealAll ? player.role : "Hidden",
-    wires: player.wires.map((wire) => ({
-      id: wire.id,
-      type: wire.isRevealed || isSelf || revealAll ? wire.type : "hidden",
-      revealed: wire.isRevealed
-    })),
-    unrevealedCount: player.wires.filter((wire) => !wire.isRevealed).length,
-    revealedCount: player.wires.filter((wire) => wire.isRevealed).length
-  };
-};
-
-const buildRoomState = (room, viewerId) => {
-  const cutter = room.players.find((player) => player.id === room.game.currentCutterId);
-  return {
-    code: room.code,
-    selfId: viewerId,
-    hostId: room.hostId,
-    chat: room.chat,
-    players: room.players.map((player) => publicPlayerView(viewerId, player, room.game.status)),
-    game: {
-      status: room.game.status,
-      currentCutterId: room.game.currentCutterId,
-      currentCutterName: cutter?.name || serverText.currentCutterWaiting,
-      currentRound: room.game.currentRound,
-      maxRounds: room.game.maxRounds,
-      cardsPerPlayer: room.game.cardsPerPlayer,
-      roundActionCount: room.game.roundActionCount,
-      actionsRemainingInRound: room.game.actionsRemainingInRound,
-      revealedCards: room.game.status === "waiting" ? [] : room.game.revealedCards,
-      revealedNeutralCableCount: room.game.revealedNeutralCableCount,
-      revealedGoldenCableCount: room.game.revealedGoldenCableCount,
-      revealedBigBenCount: room.game.revealedBigBenCount,
-      goldenCableTarget: room.game.goldenCableTarget,
-      winner: room.game.winner,
-      winningTeam: room.game.winningTeam,
-      lastRevealed: room.game.lastRevealed
-    }
-  };
-};
+// --- GESTION DES SOCKETS ---
 
 const emitRoomState = (room) => {
-  room.players.forEach((player) => {
-    io.to(player.socketId).emit("room:update", buildRoomState(room, player.id));
+  room.players.forEach(p => {
+    const state = {
+      code: room.code,
+      players: room.players.map(pl => ({
+        id: pl.id,
+        name: pl.name,
+        connected: pl.connected,
+        wires: pl.wires.map(w => ({
+          type: (w.isRevealed || pl.id === p.id || room.game.status === "ended") ? w.type : "hidden",
+          revealed: w.isRevealed
+        }))
+      })),
+      game: room.game
+    };
+    io.to(pl.socketId).emit("room:update", state);
   });
 };
 
-const ensureRoom = (code) => rooms.get(code);
-
-const removePlayerFromRoom = (socket) => {
-  const { roomCode, playerId } = socket.data;
-  if (!roomCode || !playerId) return;
-  const room = ensureRoom(roomCode);
-  if (!room) return;
-
-  const departingPlayer = room.players.find((p) => p.id === playerId);
-  room.players = room.players.filter((p) => p.id !== playerId);
-  socket.leave(roomCode);
-
-  if (departingPlayer) addSystemChat(room, serverText.leftRoom(departingPlayer.name));
-
-  if (!room.players.length) {
-    rooms.delete(room.code);
-  } else {
-    if (room.hostId === playerId) {
-      room.hostId = room.players[0].id;
-      room.players[0].isHost = true;
-      addSystemChat(room, serverText.hostNow(room.players[0].name));
-    }
-    if (room.game.status === "playing" && room.players.length < 4) {
-      endGame(room, "Moriarty", serverText.tooManyPlayersLeft);
-    }
-    emitRoomState(room);
-  }
-};
-
-const startGame = (socket) => {
-  const room = ensureRoom(socket.data.roomCode);
-  if (!room || socket.data.playerId !== room.hostId) return;
-
-  const players = activePlayers(room);
-  if (players.length < 4 || players.length > 8) {
-    io.to(socket.id).emit("error:message", serverText.connectedPlayersRequired);
-    return;
-  }
-
-  assignRolesIfNeeded(room);
-  room.game.deck = createPersistentDeck(players.length);
-  room.game.goldenCableTarget = deckCountsFor(players.length).golden;
-  room.game.revealedCards = [];
-  room.game.revealedNeutralCableCount = 0;
-  room.game.revealedGoldenCableCount = 0;
-  room.game.revealedBigBenCount = 0;
-  room.game.winner = null;
-  room.game.winningTeam = null;
-  room.game.lastRevealed = null;
-  room.game.lastCutTargetId = null;
-
-  addSystemChat(room, serverText.matchStarted);
-  startRound(room, 1, null);
-  emitRoomState(room);
-};
-
-// --- SERVEUR ET SOCKETS ---
-
 io.on("connection", (socket) => {
-  socket.on("room:create", ({ name, avatarId }) => {
-    if (!name?.trim()) return;
-    const code = generateCode();
-    const player = { id: randomId(), socketId: socket.id, name: name.trim(), avatarId: sanitizeAvatarId(avatarId), isHost: true, connected: true, role: "Hidden", wires: [] };
-    const room = { code, hostId: player.id, players: [player], chat: [], game: { status: "waiting", currentCutterId: null, currentRound: 0, maxRounds: MAX_ROUNDS, cardsPerPlayer: 0, roundActionCount: 0, actionsRemainingInRound: 0, revealedCards: [], revealedNeutralCableCount: 0, revealedGoldenCableCount: 0, revealedBigBenCount: 0, goldenCableTarget: 0, winner: null, winningTeam: null, lastRevealed: null, deck: [], lastCutTargetId: null } };
+  socket.on("room:create", ({ name }) => {
+    const code = Math.random().toString(36).slice(2, 8).toUpperCase();
+    const player = { id: randomId(), socketId: socket.id, name, connected: true, wires: [], role: "Hidden" };
+    const room = {
+      code,
+      players: [player],
+      chat: [],
+      game: { status: "waiting", currentRound: 0, revealedGoldenCableCount: 0, goldenCableTarget: 4, revealedCards: [] }
+    };
     rooms.set(code, room);
     socket.data = { roomCode: code, playerId: player.id };
     socket.join(code);
-    addSystemChat(room, serverText.createdRoom(name));
     emitRoomState(room);
   });
 
-  socket.on("room:join", ({ code, name, avatarId }) => {
-    const room = ensureRoom(code?.toUpperCase());
-    if (!room || room.players.length >= 8 || room.game.status !== "waiting") return;
-    const player = { id: randomId(), socketId: socket.id, name: name.trim(), avatarId: sanitizeAvatarId(avatarId), isHost: false, connected: true, role: "Hidden", wires: [] };
+  socket.on("room:join", ({ code, name }) => {
+    const room = rooms.get(code.toUpperCase());
+    if (!room) return;
+    const player = { id: randomId(), socketId: socket.id, name, connected: true, wires: [], role: "Hidden" };
     room.players.push(player);
-    socket.data = { roomCode: room.code, playerId: player.id };
-    socket.join(room.code);
-    addSystemChat(room, serverText.joinedRoom(name));
+    socket.data = { roomCode: code.toUpperCase(), playerId: player.id };
+    socket.join(code.toUpperCase());
     emitRoomState(room);
   });
 
-  socket.on("game:start", () => startGame(socket));
+  socket.on("game:start", () => {
+    const room = rooms.get(socket.data.roomCode);
+    if (!room) return;
+    room.game.deck = createPersistentDeck(room.players.length);
+    startRound(room, 1);
+    emitRoomState(room);
+  });
+
   socket.on("turn:cut", ({ targetPlayerId }) => handleCut(socket, targetPlayerId));
-  socket.on("chat:send", ({ message }) => handleChat(socket, message));
-  socket.on("disconnect", () => removePlayerFromRoom(socket));
+
+  socket.on("disconnect", () => {
+    const room = rooms.get(socket.data.roomCode);
+    if (room) {
+      const player = room.players.find(p => p.id === socket.data.playerId);
+      if (player) player.connected = false; // On ne le supprime PAS
+      emitRoomState(room);
+    }
+  });
 });
 
-app.get("*", (_req, res) => res.sendFile(path.join(clientDistPath, "index.html")));
-server.listen(PORT, () => console.log(`Server listening on port ${PORT}`));
+server.listen(PORT, () => console.log(`Server on ${PORT}`));
