@@ -48,6 +48,30 @@ const createDynamicDeck = (playerCount) => {
 
 const emitRoomState = (room) => {
   room.players.forEach((recipient) => {
+    const safePlayers = room.players.map(pl => ({
+      id: pl.id,
+      name: pl.name,
+      connected: pl.connected,
+      wires: pl.wires.map(w => ({
+        id: w.id,
+        type: (w.isRevealed || pl.id === recipient.id || room.game.status === "ended") ? w.type : "hidden",
+        revealed: w.isRevealed
+      }))
+    }));
+
+    // ON FORCE LA STRUCTURE ICI
+    const dataToSend = {
+      code: room.code,
+      players: safePlayers || [], // Force un tableau vide si erreur
+      game: room.game || { status: "waiting" },
+      selfId: recipient.id
+    };
+
+    io.to(recipient.socketId).emit("room:update", dataToSend);
+  });
+};
+
+  room.players.forEach((recipient) => {
     if (!recipient.socketId) return;
 
     const safePlayers = room.players.map(pl => ({
