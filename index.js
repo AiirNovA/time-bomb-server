@@ -31,6 +31,8 @@ const shuffle = (items) => {
   return copy;
 };
 
+// --- LOGIQUE DE JEU ---
+
 const createDynamicDeck = (playerCount) => {
   const totalCards = playerCount * 5; 
   const goldenCables = playerCount; 
@@ -53,7 +55,7 @@ const emitRoomState = (room) => {
       name: pl.name,
       connected: pl.connected,
       wires: pl.wires.map(w => ({
-        id: w.id, // L'ID est la clé pour éviter les doublons visuels
+        id: w.id,
         type: (w.isRevealed || pl.id === recipient.id || room.game.status === "ended") ? w.type : "hidden",
         revealed: w.isRevealed
       }))
@@ -78,9 +80,13 @@ const emitRoomState = (room) => {
 };
 
 const startRound = (room, roundNumber, openingId = null) => {
+  // 1. Vidage des mains précédent pour éviter les doublons
   room.players.forEach(p => p.wires = []);
+  
+  // 2. Pioche des cartes non révélées uniquement
   let cardsToDistribute = shuffle(room.game.deck.filter(c => !c.isRevealed));
   
+  // 3. Distribution équitable
   let i = 0;
   while (cardsToDistribute.length > 0) {
     const card = cardsToDistribute.pop();
@@ -94,6 +100,8 @@ const startRound = (room, roundNumber, openingId = null) => {
   room.game.actionsRemainingInRound = room.players.length;
   room.game.currentCutterId = openingId || room.players[0].id;
 };
+
+// --- HANDLERS SOCKET ---
 
 io.on("connection", (socket) => {
   socket.on("room:create", ({ name }) => {
@@ -123,6 +131,7 @@ io.on("connection", (socket) => {
   socket.on("game:start", () => {
     const room = rooms.get(socket.data.roomCode);
     if (!room || room.game.status !== "waiting" || room.players.length < 4) return;
+    
     room.game.deck = createDynamicDeck(room.players.length);
     room.game.goldenCableTarget = room.players.length;
     room.game.revealedGoldenCableCount = 0;
@@ -162,7 +171,6 @@ io.on("connection", (socket) => {
           room.game.status = "ended";
           room.game.winner = "Moriarty";
         } else {
-          // IMPORTANT: On attend un tout petit peu avant de lancer le round suivant pour laisser les sockets respirer
           startRound(room, room.game.currentRound + 1, target.id);
         }
       } else {
@@ -183,4 +191,4 @@ io.on("connection", (socket) => {
 });
 
 app.get("*", (req, res) => res.sendFile(path.join(__dirname, "../client/dist/index.html")));
-server.listen(PORT, () => console.log(`Serveur prêt sur ${PORT}`));
+server.listen(PORT, () => console.log(`Serveur opérationnel sur le port ${PORT}`));
