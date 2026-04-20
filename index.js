@@ -170,16 +170,19 @@ const assignRolesIfNeeded = (room) => {
     ...Array.from({ length: split.sherlocks }, () => "Sherlock"),
     ...Array.from({ length: split.moriartys }, () => "Moriarty")
   ]);
-  players.forEach((player, index) => { player.role = roles[index]; });
+  players.forEach((player, index) => {
+    player.role = roles[index];
+  });
 };
 
 const buildPlayerHandsFromDeck = (room, roundNumber) => {
   const players = activePlayers(room);
-  players.forEach(p => { p.wires = []; });
+  players.forEach((p) => {
+    p.wires = [];
+  });
 
-  // On distribue TOUTES les cartes non révélées
-  let cardsToDistribute = shuffle(room.game.deck.filter(c => !c.isRevealed));
-  
+  let cardsToDistribute = shuffle(room.game.deck.filter((c) => !c.isRevealed));
+
   let i = 0;
   while (cardsToDistribute.length > 0) {
     const card = cardsToDistribute.pop();
@@ -212,10 +215,11 @@ const startRound = (room, roundNumber, preferredOpeningPlayerId = null) => {
   room.game.status = "playing";
   room.game.currentRound = roundNumber;
   room.game.cardsPerPlayer = perPlayerTarget;
-  room.game.actionsRemainingInRound = playersCount; 
+  room.game.actionsRemainingInRound = playersCount;
   room.game.roundActionCount = playersCount;
   room.game.currentCutterId = openingPlayerId;
   room.game.lastRevealed = null;
+  room.game.blockedDrawTargets = room.game.blockedDrawTargets || {};
 
   addSystemChat(room, serverText.roundStarted(roundNumber, perPlayerTarget));
 };
@@ -238,10 +242,16 @@ const handleCut = (socket, targetPlayerId) => {
     return;
   }
 
-  const targetPlayer = room.players.find(p => p.id === targetPlayerId);
+  const targetPlayer = room.players.find((p) => p.id === targetPlayerId);
   if (!targetPlayer) return;
 
-  const availableWires = targetPlayer.wires.filter(w => !w.isRevealed);
+  const blockedTargetId = room.game.blockedDrawTargets?.[socket.data.playerId];
+  if (blockedTargetId && blockedTargetId === targetPlayerId) {
+    io.to(socket.id).emit("error:message", serverText.blockedTarget(targetPlayer.name));
+    return;
+  }
+
+  const availableWires = targetPlayer.wires.filter((w) => !w.isRevealed);
   if (availableWires.length === 0) {
     io.to(socket.id).emit("error:message", serverText.noHiddenWiresRemaining);
     return;
@@ -249,21 +259,22 @@ const handleCut = (socket, targetPlayerId) => {
 
   const selectedWire = availableWires[Math.floor(Math.random() * availableWires.length)];
   selectedWire.isRevealed = true;
-  
+
   const revealedCard = {
     id: randomId(),
     type: selectedWire.type,
     playerId: targetPlayer.id,
     playerName: targetPlayer.name,
-    revealedBy: room.players.find(p => p.id === socket.data.playerId).name,
+    revealedBy: room.players.find((p) => p.id === socket.data.playerId).name,
     revealedAt: Date.now()
   };
 
   room.game.revealedCards.push(revealedCard);
   room.game.lastRevealed = revealedCard;
   room.game.lastCutTargetId = targetPlayer.id;
+  room.game.blockedDrawTargets = room.game.blockedDrawTargets || {};
+  room.game.blockedDrawTargets[targetPlayer.id] = socket.data.playerId;
 
-  // Conditions de victoire
   if (selectedWire.type === "big_ben") {
     room.game.revealedBigBenCount = 1;
     endGame(room, "Moriarty", serverText.bigBenTriggered);
@@ -276,8 +287,11 @@ const handleCut = (socket, targetPlayerId) => {
     room.game.revealedNeutralCableCount += 1;
   }
 
-  // Suite de la manche ou fin de manche
   if (room.game.status === "playing") {
+    if (room.game.blockedDrawTargets[socket.data.playerId]) {
+      delete room.game.blockedDrawTargets[socket.data.playerId];
+    }
+
     room.game.actionsRemainingInRound -= 1;
     if (room.game.actionsRemainingInRound <= 0) {
       if (room.game.currentRound >= room.game.maxRounds) {
@@ -334,6 +348,7 @@ const publicPlayerView = (viewerId, player, gameStatus) => {
 
 const buildRoomState = (room, viewerId) => {
   const cutter = room.players.find((player) => player.id === room.game.currentCutterId);
+  const blockedTargetId = room.game.blockedDrawTargets?.[viewerId] || null;
   return {
     code: room.code,
     selfId: viewerId,
@@ -356,7 +371,8 @@ const buildRoomState = (room, viewerId) => {
       goldenCableTarget: room.game.goldenCableTarget,
       winner: room.game.winner,
       winningTeam: room.game.winningTeam,
-      lastRevealed: room.game.lastRevealed
+      lastRevealed: room.game.lastRevealed,
+      blockedTargetId
     }
   };
 };
@@ -429,8 +445,42 @@ io.on("connection", (socket) => {
   socket.on("room:create", ({ name, avatarId }) => {
     if (!name?.trim()) return;
     const code = generateCode();
-    const player = { id: randomId(), socketId: socket.id, name: name.trim(), avatarId: sanitizeAvatarId(avatarId), isHost: true, connected: true, role: "Hidden", wires: [] };
-    const room = { code, hostId: player.id, players: [player], chat: [], game: { status: "waiting", currentCutterId: null, currentRound: 0, maxRounds: MAX_ROUNDS, cardsPerPlayer: 0, roundActionCount: 0, actionsRemainingInRound: 0, revealedCards: [], revealedNeutralCableCount: 0, revealedGoldenCableCount: 0, revealedBigBenCount: 0, goldenCableTarget: 0, winner: null, winningTeam: null, lastRevealed: null, deck: [], lastCutTargetId: null } };
+    const player = {
+      id: randomId(),
+      socketId: socket.id,
+      name: name.trim(),
+      avatarId: sanitizeAvatarId(avatarId),
+      isHost: true,
+      connected: true,
+      role: "Hidden",
+      wires: []
+    };
+    const room = {
+      code,
+      hostId: player.id,
+      players: [player],
+      chat: [],
+      game: {
+        status: "waiting",
+        currentCutterId: null,
+        currentRound: 0,
+        maxRounds: MAX_ROUNDS,
+        cardsPerPlayer: 0,
+        roundActionCount: 0,
+        actionsRemainingInRound: 0,
+        revealedCards: [],
+        revealedNeutralCableCount: 0,
+        revealedGoldenCableCount: 0,
+        revealedBigBenCount: 0,
+        goldenCableTarget: 0,
+        winner: null,
+        winningTeam: null,
+        lastRevealed: null,
+        deck: [],
+        lastCutTargetId: null,
+        blockedDrawTargets: {}
+      }
+    };
     rooms.set(code, room);
     socket.data = { roomCode: code, playerId: player.id };
     socket.join(code);
@@ -441,7 +491,16 @@ io.on("connection", (socket) => {
   socket.on("room:join", ({ code, name, avatarId }) => {
     const room = ensureRoom(code?.toUpperCase());
     if (!room || room.players.length >= 8 || room.game.status !== "waiting") return;
-    const player = { id: randomId(), socketId: socket.id, name: name.trim(), avatarId: sanitizeAvatarId(avatarId), isHost: false, connected: true, role: "Hidden", wires: [] };
+    const player = {
+      id: randomId(),
+      socketId: socket.id,
+      name: name.trim(),
+      avatarId: sanitizeAvatarId(avatarId),
+      isHost: false,
+      connected: true,
+      role: "Hidden",
+      wires: []
+    };
     room.players.push(player);
     socket.data = { roomCode: room.code, playerId: player.id };
     socket.join(room.code);
