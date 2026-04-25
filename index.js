@@ -1,8 +1,6 @@
 import express from "express";
 import cors from "cors";
 import http from "http";
-import path from "path";
-import { fileURLToPath } from "url";
 import { Server } from "socket.io";
 
 const PORT = process.env.PORT || 3001;
@@ -26,9 +24,6 @@ const ALLOWED_AVATAR_IDS = new Set([
 
 const rooms = new Map();
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
 const serverText = {
   system: "Systeme",
   currentCutterWaiting: "En attente",
@@ -46,7 +41,9 @@ const serverText = {
   enoughGoldenCables: "Tous les cables dores ont ete trouves. Les Sherlock gagnent.",
   bigBenTriggered: "Big Ben a ete revele. Les Moriarty gagnent immediatement.",
   maxRoundsReached: "La 4e manche est terminee sans victoire des Sherlock. Les Moriarty gagnent.",
+  replayStarted: "Une nouvelle partie commence dans la meme salle.",
   gameNotInProgress: "La partie n'est pas en cours.",
+  replayUnavailable: "Vous ne pouvez rejouer qu'a la fin d'une partie terminee.",
   notYourTurn: "Ce n'est pas votre tour.",
   mustTargetAnotherPlayer: "Vous devez viser un autre joueur.",
   targetPlayerNotFound: "Joueur cible introuvable.",
@@ -65,9 +62,6 @@ app.use(express.json());
 app.get("/health", (_request, response) => {
   response.json({ ok: true });
 });
-
-const clientDistPath = path.resolve(__dirname, "../client/dist");
-app.use(express.static(clientDistPath));
 
 const server = http.createServer(app);
 const io = new Server(server, {
@@ -229,6 +223,13 @@ const endGame = (room, winner, message) => {
   room.game.winner = winner;
   room.game.winningTeam = winner;
   addSystemChat(room, message);
+};
+
+const resetPlayersForNewGame = (room) => {
+  room.players.forEach((player) => {
+    player.role = "Hidden";
+    player.wires = [];
+  });
 };
 
 // --- ACTIONS DE JEU ---
@@ -439,6 +440,44 @@ const startGame = (socket) => {
   emitRoomState(room);
 };
 
+const replayGame = (socket) => {
+  const room = ensureRoom(socket.data.roomCode);
+  if (!room || socket.data.playerId !== room.hostId) return;
+  if (room.game.status !== "ended") {
+    io.to(socket.id).emit("error:message", serverText.replayUnavailable);
+    return;
+  }
+
+  const players = activePlayers(room);
+  if (players.length < 4 || players.length > 8) {
+    io.to(socket.id).emit("error:message", serverText.connectedPlayersRequired);
+    return;
+  }
+
+  resetPlayersForNewGame(room);
+  room.game.deck = createPersistentDeck(players.length);
+  room.game.goldenCableTarget = deckCountsFor(players.length).golden;
+  room.game.revealedCards = [];
+  room.game.revealedNeutralCableCount = 0;
+  room.game.revealedGoldenCableCount = 0;
+  room.game.revealedBigBenCount = 0;
+  room.game.winner = null;
+  room.game.winningTeam = null;
+  room.game.lastRevealed = null;
+  room.game.lastCutTargetId = null;
+  room.game.blockedDrawTargets = {};
+  room.game.currentCutterId = null;
+  room.game.currentRound = 0;
+  room.game.cardsPerPlayer = 0;
+  room.game.roundActionCount = 0;
+  room.game.actionsRemainingInRound = 0;
+
+  assignRolesIfNeeded(room);
+  addSystemChat(room, serverText.replayStarted);
+  startRound(room, 1, null);
+  emitRoomState(room);
+};
+
 // --- SERVEUR ET SOCKETS ---
 
 io.on("connection", (socket) => {
@@ -509,10 +548,11 @@ io.on("connection", (socket) => {
   });
 
   socket.on("game:start", () => startGame(socket));
+  socket.on("game:replay", () => replayGame(socket));
+  socket.on("room:leave", () => removePlayerFromRoom(socket));
   socket.on("turn:cut", ({ targetPlayerId }) => handleCut(socket, targetPlayerId));
   socket.on("chat:send", ({ message }) => handleChat(socket, message));
   socket.on("disconnect", () => removePlayerFromRoom(socket));
 });
 
-app.get("*", (_req, res) => res.sendFile(path.join(clientDistPath, "index.html")));
 server.listen(PORT, () => console.log(`Server listening on port ${PORT}`));
