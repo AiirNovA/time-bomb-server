@@ -411,6 +411,10 @@ const removePlayerFromRoom = (socket) => {
     }
     emitRoomState(room);
   }
+
+  delete socket.data.roomCode;
+  delete socket.data.playerId;
+  io.to(socket.id).emit("room:left");
 };
 
 const startGame = (socket) => {
@@ -442,7 +446,7 @@ const startGame = (socket) => {
 
 const replayGame = (socket) => {
   const room = ensureRoom(socket.data.roomCode);
-  if (!room || socket.data.playerId !== room.hostId) return;
+  if (!room) return;
   if (room.game.status !== "ended") {
     io.to(socket.id).emit("error:message", serverText.replayUnavailable);
     return;
