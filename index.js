@@ -19,8 +19,11 @@ const ALLOWED_AVATAR_IDS = new Set([
   "inventor",
   "newspaper-boy",
   "chemist",
-  "masked-noble"
+  "masked-noble",
+  "custom-avatar"
 ]);
+
+const MAX_AVATAR_DATA_LENGTH = 350000;
 
 const rooms = new Map();
 
@@ -112,6 +115,18 @@ const activePlayers = (room) => room.players.filter((player) => player.connected
 
 const sanitizeAvatarId = (avatarId) =>
   ALLOWED_AVATAR_IDS.has(avatarId) ? avatarId : "detective-loupe";
+
+const sanitizeAvatarData = (avatarData) => {
+  if (
+    typeof avatarData === "string" &&
+    avatarData.startsWith("data:image/") &&
+    avatarData.length <= MAX_AVATAR_DATA_LENGTH
+  ) {
+    return avatarData;
+  }
+
+  return "";
+};
 
 const teamSplitFor = (playerCount) => {
   if (playerCount === 4) {
@@ -334,6 +349,7 @@ const publicPlayerView = (viewerId, player, gameStatus) => {
     id: player.id,
     name: player.name,
     avatarId: player.avatarId,
+    avatarData: player.avatarData || "",
     isHost: player.isHost,
     connected: player.connected,
     role: isSelf || revealAll ? player.role : "Hidden",
@@ -485,7 +501,7 @@ const replayGame = (socket) => {
 // --- SERVEUR ET SOCKETS ---
 
 io.on("connection", (socket) => {
-  socket.on("room:create", ({ name, avatarId }) => {
+  socket.on("room:create", ({ name, avatarId, avatarData }) => {
     if (!name?.trim()) return;
     const code = generateCode();
     const player = {
@@ -493,6 +509,7 @@ io.on("connection", (socket) => {
       socketId: socket.id,
       name: name.trim(),
       avatarId: sanitizeAvatarId(avatarId),
+      avatarData: sanitizeAvatarData(avatarData),
       isHost: true,
       connected: true,
       role: "Hidden",
@@ -531,7 +548,7 @@ io.on("connection", (socket) => {
     emitRoomState(room);
   });
 
-  socket.on("room:join", ({ code, name, avatarId }) => {
+  socket.on("room:join", ({ code, name, avatarId, avatarData }) => {
     const room = ensureRoom(code?.toUpperCase());
     if (!room || room.players.length >= 8 || room.game.status !== "waiting") return;
     const player = {
@@ -539,6 +556,7 @@ io.on("connection", (socket) => {
       socketId: socket.id,
       name: name.trim(),
       avatarId: sanitizeAvatarId(avatarId),
+      avatarData: sanitizeAvatarData(avatarData),
       isHost: false,
       connected: true,
       role: "Hidden",
